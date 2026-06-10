@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import inspect
 import logging
 import random
 import time
@@ -131,8 +132,8 @@ class ActionGateway:
         def call() -> str:
             if sandboxed:
                 return self._sandbox.run(handler, arguments)
-            # handler 声明了 auth_context 参数时才注入，避免污染普通技能签名
-            if "auth_context" in handler.__code__.co_varnames:
+            # handler 显式声明了 auth_context 形参时才注入（co_varnames 含局部变量，不可用）
+            if "auth_context" in inspect.signature(handler).parameters:
                 return handler(**arguments, auth_context=auth_context)
             return handler(**arguments)
 

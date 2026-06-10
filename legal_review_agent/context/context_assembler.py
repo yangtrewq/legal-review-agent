@@ -19,6 +19,8 @@ from typing import Any
 import anthropic
 
 from ..config import Config
+from ..observability.tracing import serialize
+from ..sdk_utils import extract_text
 from ..memory.memory_manager import MemoryEntry, MemoryManager
 
 # 静态系统提示词 —— 保持字节级稳定以命中前缀缓存，禁止插入时间戳/会话 ID 等易变内容
@@ -83,7 +85,9 @@ class ContextAssembler:
             }}},
             messages=[{"role": "user", "content": f"任务：{query}\n\n候选记忆：\n{listing}\n\n最多选 {max_items} 条。"}],
         )
-        text = next(b.text for b in response.content if b.type == "text")
+        text = extract_text(response)
+        if not text:
+            return candidates[:max_items]  # 筛选器异常时退化为取前 N 条，不阻断主链路
         indices = json.loads(text)["indices"][:max_items]
         return [candidates[i] for i in indices if 0 <= i < len(candidates)]
 
@@ -110,22 +114,56 @@ class ContextAssembler:
 
     # ---- 上下文压缩与成本控制 ----
 
+    @staticmethod
+    def _dump(message: Any) -> str:
+        """消息序列化：先经 serialize 把 SDK Pydantic 对象转纯数据，再 json.dumps。
+
+        引擎会把 response.content（SDK 对象列表）原样 append 进 messages，
+        直接 json.dumps 会抛 TypeError —— 这里是全部消息序列化的唯一入口。
+        """
+        return json.dumps(serialize(message), ensure_ascii=False)
+
+    @staticmethod
+    def _is_tool_result_message(message: Any) -> bool:
+        """是否为承载 tool_result 的 user 消息（引擎构造的回执消息）。"""
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return False
+        content = message.get("content")
+        if not isinstance(content, list):
+            return False
+        return any(
+            (b.get("type") if isinstance(b, dict) else getattr(b, "type", None)) == "tool_result"
+            for b in content
+        )
+
     def maybe_compress(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """估算上下文规模，超阈值时压缩早期轮次（保留首条任务说明与最近轮次）。"""
-        total = sum(estimate_tokens(json.dumps(m, ensure_ascii=False)) for m in messages)
+        """估算上下文规模，超阈值时压缩早期轮次（保留首条任务说明与最近轮次）。
+
+        切分按"回合边界"对齐：tail 不能以 tool_result 消息开头，否则其配对的
+        tool_use 被压缩进 middle，违反 API 的 tool_use/tool_result 配对约束。
+        """
+        total = sum(estimate_tokens(self._dump(m)) for m in messages)
         if total < self._cfg.context_compaction_threshold_tokens or len(messages) <= 6:
             return messages
 
-        head, tail = messages[:1], messages[-4:]
-        middle = messages[1:-4]
-        middle_text = json.dumps(middle, ensure_ascii=False)[:60_000]
+        # 期望保留最近 4 条，但向后推进到安全的回合边界
+        tail_start = len(messages) - 4
+        while tail_start < len(messages) and self._is_tool_result_message(messages[tail_start]):
+            tail_start += 1
+        if tail_start >= len(messages) or tail_start <= 1:
+            return messages  # 找不到安全切点，本轮放弃压缩
+
+        head, middle, tail = messages[:1], messages[1:tail_start], messages[tail_start:]
+        middle_text = self._dump(middle)[:60_000]
         response = self._client.messages.create(
             model=self._cfg.models.router_model,
             max_tokens=2048,
             system="压缩以下 Agent 执行历史，保留：已完成的子任务及其结论、已调用工具与关键返回、待办事项。丢弃：原始长文本、重复内容。",
             messages=[{"role": "user", "content": middle_text}],
         )
-        summary = next(b.text for b in response.content if b.type == "text")
+        summary = extract_text(response)
+        if not summary:
+            return messages  # 压缩器异常时保持原文，不破坏上下文
         compressed = {
             "role": "user",
             "content": f"<compressed_history>\n{summary}\n</compressed_history>",

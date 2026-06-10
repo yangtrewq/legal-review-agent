@@ -11,6 +11,7 @@ import json
 import anthropic
 
 from ..config import Config
+from ..sdk_utils import require_text
 from ..registry.tool_registry import ToolRegistry
 from ..types import ExecutionPlan, SubTask, UserInput
 
@@ -79,7 +80,7 @@ class TaskPlanner:
             output_config={"format": {"type": "json_schema", "schema": _PLAN_SCHEMA}},
             messages=messages,
         )
-        text = next(b.text for b in response.content if b.type == "text")
+        text = require_text(response, stage="planning")
         data = json.loads(text)
         if tracer:
             tracer.end_span(span, plan=data, usage=response.usage)

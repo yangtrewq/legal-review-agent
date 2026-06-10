@@ -15,6 +15,7 @@ import json
 import anthropic
 
 from ..config import Config
+from ..sdk_utils import require_text
 from ..types import MacroIntent, RoutingDecision, UserInput
 
 _ROUTING_SCHEMA = {
@@ -60,7 +61,7 @@ class IntentRouter:
             output_config={"format": {"type": "json_schema", "schema": _ROUTING_SCHEMA}},
             messages=messages,
         )
-        text = next(b.text for b in response.content if b.type == "text")
+        text = require_text(response, stage="routing")
         data = json.loads(text)
         if tracer:
             tracer.end_span(span, decision=data, usage=response.usage)

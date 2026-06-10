@@ -28,6 +28,7 @@ from ..memory.memory_manager import MemoryManager
 from ..observability.events import EventEmitter, NoopEmitter
 from ..observability.tracing import NoopTracer, Tracer, serialize
 from ..registry.tool_registry import ToolRegistry
+from ..sdk_utils import extract_text
 from ..types import (
     Checkpoint, CheckpointOption, ExecutionPlan, RunInterrupted,
     ToolInstruction, UserInput,
@@ -501,4 +502,4 @@ class CognitiveEngine:
 
     @staticmethod
     def _extract_text(response: Any) -> str:
-        return "\n".join(b.text for b in response.content if b.type == "text")
+        return extract_text(response)
