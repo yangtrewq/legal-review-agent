@@ -46,6 +46,35 @@ ASK_USER_TOOL = {
     },
 }
 
+# 渐进披露元工具：模型自主发现并加载技能（L1+L2），由引擎拦截，不进执行网关
+LOAD_SKILL_TOOL = {
+    "name": "load_skill",
+    "description": "当技能目录中存在适合当前子任务、但本轮尚未加载的技能时调用，按名称加载其完整定义与使用指南。加载后即可直接调用该技能。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "skill_name": {"type": "string", "description": "技能目录中列出的技能名"},
+        },
+        "required": ["skill_name"],
+    },
+}
+
+# 渐进披露元工具：读取技能的 L3 资源文件（范本、checklist 等）
+READ_SKILL_RESOURCE_TOOL = {
+    "name": "read_skill_resource",
+    "description": "读取某技能附带的资源文件（技能目录或使用指南中列出的范本、核对清单等）。仅在确实需要其内容时调用。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "skill_name": {"type": "string", "description": "技能名"},
+            "resource_name": {"type": "string", "description": "资源文件名，如 risk_checklist.md"},
+        },
+        "required": ["skill_name", "resource_name"],
+    },
+}
+
+META_TOOL_NAMES = {"ask_user", "load_skill", "read_skill_resource"}
+
 
 class CognitiveEngine:
     def __init__(
@@ -80,12 +109,14 @@ class CognitiveEngine:
         """按执行图谱驱动 Agentic Loop，返回最终审查产出文本。"""
         self._init_task_tracking(plan)
         messages = self._bootstrap_messages(user_input, plan)
-        tools = self._load_tools(plan)
+        # 本轮激活的工具集：load_skill 元工具可在运行中追加（会重建一次前缀缓存）
+        self._active_tools = self._load_tools(plan)
+        self._injected_skills: set[str] = set()
 
         final_text = ""
         for iteration in range(self._cfg.max_loop_iterations):
             messages = self._assembler.maybe_compress(messages)
-            response = self._call_model(messages, tools)
+            response = self._call_model(messages, self._active_tools)
 
             if response.stop_reason == "pause_turn":
                 messages.append({"role": "assistant", "content": response.content})
@@ -103,6 +134,10 @@ class CognitiveEngine:
                     continue
                 if block.name == "ask_user":
                     tool_results.append(self._handle_ask_user(block))
+                elif block.name == "load_skill":
+                    tool_results.append(self._handle_load_skill(block))
+                elif block.name == "read_skill_resource":
+                    tool_results.append(self._handle_read_resource(block))
                 else:
                     tool_results.append(self._handle_tool_call(block))
             messages.append({"role": "user", "content": tool_results})
@@ -133,6 +168,9 @@ class CognitiveEngine:
             "text": (
                 f"# 审查需求\n{user_input.text}\n\n"
                 f"# 执行图谱（按依赖顺序完成全部子任务）\n{plan_text}\n\n"
+                f"# 技能目录（L0，渐进披露）\n{self._registry.catalog()}\n"
+                "说明：目录中的技能若本轮未加载，可用 load_skill 按名称加载；"
+                "标注了资源的技能可用 read_skill_resource 读取资源文件。\n\n"
                 + (f"{dynamic_ctx}\n\n" if dynamic_ctx else "")
                 + "完成全部子任务后，输出结构化的审查报告。"
             ),
@@ -141,11 +179,16 @@ class CognitiveEngine:
         return [{"role": "user", "content": content}]
 
     def _load_tools(self, plan: ExecutionPlan) -> list[dict[str, Any]]:
-        """JIT 加载：仅加载规划建议涉及的技能 Schema + ask_user。"""
+        """JIT 加载：仅加载规划建议涉及的技能 Schema（L1）+ 引擎元工具。
+
+        规划遗漏的技能不在此兜底 —— 模型可在运行中通过 load_skill 自主补载。
+        """
         suggested = sorted({s for t in plan.tasks for s in t.suggested_skills
                             if s in self._registry.list_names()})
         names = suggested or None  # 规划未给建议时回退到全量（小工具集）
-        return self._registry.load_schemas(names) + [ASK_USER_TOOL]
+        return self._registry.load_schemas(names) + [
+            ASK_USER_TOOL, LOAD_SKILL_TOOL, READ_SKILL_RESOURCE_TOOL,
+        ]
 
     def _call_model(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]):
         system = self._assembler.build_system()
@@ -226,12 +269,88 @@ class CognitiveEngine:
             "tool_use_id": outcome.tool_use_id, "tool_name": block.name,
             "is_error": outcome.is_error, "preview": outcome.content[:300],
         })
+        content = outcome.content + self._maybe_inject_instructions(block.name)
         return {
             "type": "tool_result",
             "tool_use_id": outcome.tool_use_id,
-            "content": outcome.content,
+            "content": content,
             "is_error": outcome.is_error,
         }
+
+    # ---- 内部：渐进披露 ----
+
+    def _maybe_inject_instructions(self, skill_name: str) -> str:
+        """L2 首调注入：技能在本轮第一次被调用时，把使用指南拼进 tool_result 回喂。
+
+        正文走 messages 尾部而非 system，保持缓存前缀稳定；每技能每轮只注入一次。
+        """
+        if skill_name in self._injected_skills:
+            return ""
+        self._injected_skills.add(skill_name)
+        try:
+            instructions = self._registry.get(skill_name).load_instructions()
+        except KeyError:
+            return ""
+        if not instructions:
+            return ""
+        self._disclose(skill_name, level="L2", trigger="first_call", text=instructions)
+        return (
+            f"\n\n<skill_instructions skill=\"{skill_name}\">\n"
+            "（该技能本轮首次调用，以下是使用指南，后续调用与结果解读须遵循）\n"
+            f"{instructions}\n</skill_instructions>"
+        )
+
+    def _handle_load_skill(self, block: Any) -> dict[str, Any]:
+        """模型自主发现：加载技能 Schema（L1）入本轮工具集，并返回 L2 指南。"""
+        skill_name = block.input.get("skill_name", "")
+        try:
+            spec = self._registry.get(skill_name)
+        except KeyError:
+            return self._meta_result(block, f"技能不存在：{skill_name}。可用技能：{', '.join(self._registry.list_names())}", is_error=True)
+
+        appended = False
+        if all(t["name"] != skill_name for t in self._active_tools):
+            # 追加工具会击穿本轮前缀缓存，记入链路以便审视成本
+            self._active_tools.append(spec.to_anthropic_tool())
+            appended = True
+
+        instructions = spec.load_instructions() or "（该技能无详细指南）"
+        resources = spec.list_resources()
+        content = (
+            f"技能 {skill_name} 已加载，可直接调用。\n\n## 使用指南\n{instructions}"
+            + (f"\n\n## 可读资源（read_skill_resource）\n{', '.join(resources)}" if resources else "")
+        )
+        self._disclose(skill_name, level="L1+L2", trigger="model_request",
+                       text=content, cache_invalidated=appended)
+        self._injected_skills.add(skill_name)  # 已随加载给过指南，首调不再重复注入
+        return self._meta_result(block, content)
+
+    def _handle_read_resource(self, block: Any) -> dict[str, Any]:
+        """L3 资源读取。"""
+        skill_name = block.input.get("skill_name", "")
+        resource_name = block.input.get("resource_name", "")
+        try:
+            content = self._registry.get(skill_name).read_resource(resource_name)
+        except (KeyError, FileNotFoundError) as e:
+            return self._meta_result(block, str(e), is_error=True)
+        self._disclose(skill_name, level="L3", trigger="model_request",
+                       text=content, resource=resource_name)
+        return self._meta_result(block, content)
+
+    def _disclose(self, skill_name: str, level: str, trigger: str,
+                  text: str, **extra: Any) -> None:
+        est_tokens = int(len(text) / 2)
+        self._tracer.record("skill_disclosure", skill_name,
+                            level=level, trigger=trigger, est_tokens=est_tokens, **extra)
+        self._emitter.emit("skill_disclosure", {
+            "skill_name": skill_name, "level": level,
+            "trigger": trigger, "est_tokens": est_tokens,
+        })
+
+    @staticmethod
+    def _meta_result(block: Any, content: str, is_error: bool = False) -> dict[str, Any]:
+        return {"type": "tool_result", "tool_use_id": block.id,
+                "content": content, "is_error": is_error}
 
     def _run_checkpoint(self, tool_name: str, outcome):
         checkpoint = Checkpoint(

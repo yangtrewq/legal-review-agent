@@ -40,6 +40,22 @@
   追问获得的参数沉淀到会话记忆，后续轮次不再重复询问。
 - **前缀缓存友好**：静态系统提示词禁止插入时间戳/会话 ID 等易变内容；动态上下文统一放在 messages 内。
 
+## 技能渐进披露 (Progressive Disclosure)
+
+四层披露资产，按需进入上下文以控制 token 成本：
+
+| 层级 | 内容 | 何时进上下文 | 实现 |
+|---|---|---|---|
+| L0 元数据 | name + 描述 + when_to_use 触发条件 | 常驻（规划器目录 + 引擎引导消息） | `SkillSpec.when_to_use`、`ToolRegistry.catalog()` |
+| L1 Schema | input_schema 完整定义 | bootstrap 按规划建议加载，或运行中经 `load_skill` 补载 | `load_schemas()`、引擎 `_handle_load_skill` |
+| L2 指南正文 | 详细 SOP / 注意事项（instructions.md） | 技能**首次被调用**时注入 tool_result，每轮一次 | 引擎 `_maybe_inject_instructions` |
+| L3 资源文件 | 范本 / checklist（resources/） | 模型经 `read_skill_resource` 显式读取 | `SkillSpec.read_resource()`（拒绝路径穿越） |
+
+- **文档目录约定**：`skills/docs/<skill_name>/{instructions.md, resources/*}`，由 `registry.attach_docs()` 挂载，正文懒加载；
+- **披露触发三机制**：规划期收窄（suggested_skills）、模型自主发现（`load_skill` 元工具，补上规划遗漏）、首调自动注入（L2）；
+- **缓存友好**：L2/L3 一律走 messages 尾部（tool_result），不进 system；`load_skill` 中途追加工具会击穿前缀缓存，该事件以 `cache_invalidated` 标记记入链路；
+- **观测**：每次披露记录 `skill_disclosure` Span（层级/触发方式/估算 token），前端聊天流显示披露气泡，调试抽屉可逐条审阅。
+
 ## 前端交互与链路观测
 
 | 能力 | 模块 | 说明 |

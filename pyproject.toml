@@ -24,4 +24,4 @@ include = ["legal_review_agent*"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-legal_review_agent = ["web/*.html"]
+legal_review_agent = ["web/*.html", "skills/docs/**/*"]

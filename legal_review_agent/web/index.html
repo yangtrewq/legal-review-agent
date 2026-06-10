@@ -90,6 +90,7 @@
   .span-kind.routing       { background: var(--warn); }
   .span-kind.planning      { background: var(--accent); }
   .span-kind.checkpoint    { background: var(--err); }
+  .span-kind.skill_disclosure { background: #7e57c2; }
   .span-name { font-weight: 600; flex: 1; }
   .span-dur  { color: var(--muted); font-size: 12px; }
   .span-detail { display: none; padding: 12px 14px; border-top: 1px solid var(--border); }
@@ -250,6 +251,9 @@ function handleEvent(ev, es) {
       else addChip(label, ev.is_error);
       break;
     }
+    case 'skill_disclosure':
+      addChip(`📚 ${ev.skill_name} 指南已披露（${ev.level} · ${ev.trigger} · ~${ev.est_tokens} tok）`);
+      break;
     case 'checkpoint': showCkpt(ev); break;
     case 'checkpoint_resolved': hideCkpt(); break;
     case 'final':

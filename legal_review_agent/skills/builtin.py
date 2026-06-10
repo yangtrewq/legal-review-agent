@@ -7,8 +7,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from ..registry.tool_registry import SkillSpec, ToolRegistry
+
+# 渐进披露文档根目录：docs/<skill_name>/{instructions.md, resources/}
+DOCS_ROOT = Path(__file__).resolve().parent / "docs"
 
 
 def _fetch_baseline(contract_type: str, counterparty: str = "") -> str:
@@ -57,6 +61,7 @@ def _search_legal_knowledge(query: str, top_k: int = 5) -> str:
 def register_builtin_skills(registry: ToolRegistry) -> ToolRegistry:
     registry.register(SkillSpec(
         name="fetch_baseline",
+        when_to_use="审查任务开始时拉取比对基准",
         description="拉取企业《条款基线库》中指定合同类型的历史基线条款。审查任务的第一步通常需要调用本技能获取比对基准。",
         input_schema={
             "type": "object",
@@ -71,6 +76,7 @@ def register_builtin_skills(registry: ToolRegistry) -> ToolRegistry:
     ))
     registry.register(SkillSpec(
         name="parse_clauses",
+        when_to_use="拿到合同原文后做逐条结构化",
         description="对合同文本做结构化条款解析，输出条款列表。当上下文中已有合同原文且需要逐条分析时调用。",
         input_schema={
             "type": "object",
@@ -84,6 +90,7 @@ def register_builtin_skills(registry: ToolRegistry) -> ToolRegistry:
     ))
     registry.register(SkillSpec(
         name="identify_risk_points",
+        when_to_use="条款与基线齐备后做风险比对",
         description="将解析后的条款与基线条款/黑名单条款做风控比对，识别风险点。必须先有 parse_clauses 和 fetch_baseline 的结果。",
         input_schema={
             "type": "object",
@@ -99,6 +106,7 @@ def register_builtin_skills(registry: ToolRegistry) -> ToolRegistry:
     ))
     registry.register(SkillSpec(
         name="generate_risk_point_opinions",
+        when_to_use="风险点经人工确认后生成修改意见",
         description="针对已确认的风险点生成修改意见。调用前风险点应已通过 HITL 确认。",
         input_schema={
             "type": "object",
@@ -114,6 +122,7 @@ def register_builtin_skills(registry: ToolRegistry) -> ToolRegistry:
     ))
     registry.register(SkillSpec(
         name="search_legal_knowledge",
+        when_to_use="需要法规依据或单一知识检索时",
         description="检索法律知识库与法规条文。用于单一检索请求旁路，或审查过程中的法规依据补充。",
         input_schema={
             "type": "object",
@@ -126,4 +135,5 @@ def register_builtin_skills(registry: ToolRegistry) -> ToolRegistry:
         handler=_search_legal_knowledge,
         tags=("retrieval",),
     ))
+    registry.attach_docs(DOCS_ROOT)
     return registry
