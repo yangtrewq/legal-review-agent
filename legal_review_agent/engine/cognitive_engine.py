@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import uuid
 from typing import Any
 
@@ -25,22 +26,39 @@ from ..context.context_assembler import ContextAssembler
 from ..delivery.hitl import HITLChannel
 from ..memory.memory_manager import MemoryManager
 from ..observability.events import EventEmitter, NoopEmitter
-from ..observability.tracing import NoopTracer, Tracer
+from ..observability.tracing import NoopTracer, Tracer, serialize
 from ..registry.tool_registry import ToolRegistry
-from ..types import Checkpoint, ExecutionPlan, ToolInstruction, UserInput
+from ..types import (
+    Checkpoint, CheckpointOption, ExecutionPlan, RunInterrupted,
+    ToolInstruction, UserInput,
+)
 from ..executor.action_gateway import ActionGateway
+from .run_state import RunState, RunStateStore
 
 logger = logging.getLogger(__name__)
 
 # 主动追问工具：模型缺槽位时的标准出口，由引擎拦截并走 HITL 通道，不进执行网关
 ASK_USER_TOOL = {
     "name": "ask_user",
-    "description": "当上下文中缺少完成当前子任务的必填信息（如合同类型、相对方名称、审查立场）时调用，向用户追问。一次只问一个明确的问题。",
+    "description": "当上下文中缺少完成当前子任务的必填信息（如合同类型、相对方名称、审查立场）时调用，向用户追问。一次只问一个明确的问题。尽量给出 2-4 个候选答案（options），用户可直接点选；开放性问题可不给。",
     "input_schema": {
         "type": "object",
         "properties": {
             "question": {"type": "string", "description": "向用户提出的具体问题"},
             "missing_field": {"type": "string", "description": "缺失的参数名"},
+            "options": {
+                "type": "array",
+                "description": "建议的候选答案，前端以卡片展示供用户点选",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "候选答案（点选后即作为回答）"},
+                        "description": {"type": "string", "description": "该选项的含义或影响，一句话"},
+                        "recommended": {"type": "boolean", "description": "是否为推荐项，至多一个"},
+                    },
+                    "required": ["label"],
+                },
+            },
         },
         "required": ["question"],
     },
@@ -88,6 +106,8 @@ class CognitiveEngine:
         hitl: HITLChannel,
         emitter: EventEmitter | None = None,
         tracer: Tracer | None = None,
+        state_store: RunStateStore | None = None,
+        interrupt_event: threading.Event | None = None,
     ):
         self._client = client
         self._cfg = config
@@ -98,6 +118,8 @@ class CognitiveEngine:
         self._hitl = hitl
         self._emitter = emitter or NoopEmitter()
         self._tracer = tracer or NoopTracer()
+        self._state_store = state_store
+        self._interrupt_event = interrupt_event or threading.Event()
         # 任务进度可视化：技能 → 子任务的映射与完成度（启发式：
         # 子任务 suggested_skills 全部成功执行过即视为完成）
         self._skill_to_tasks: dict[str, list[str]] = {}
@@ -105,48 +127,115 @@ class CognitiveEngine:
 
     # ---- 对外入口 ----
 
-    def run(self, user_input: UserInput, plan: ExecutionPlan) -> str:
-        """按执行图谱驱动 Agentic Loop，返回最终审查产出文本。"""
+    def run(self, user_input: UserInput, plan: ExecutionPlan,
+            run_id: str | None = None) -> str | None:
+        """按执行图谱驱动 Agentic Loop。返回最终产出文本；被中断挂起时返回 None。"""
+        state = RunState(
+            run_id=run_id or uuid.uuid4().hex[:12],
+            session_id=user_input.session_id,
+            user_text=user_input.text,
+            goal=plan.goal,
+            tasks=[t.__dict__ for t in plan.tasks],
+        )
         self._init_task_tracking(plan)
-        messages = self._bootstrap_messages(user_input, plan)
+        state.messages = self._bootstrap_messages(user_input, plan)
         # 本轮激活的工具集：load_skill 元工具可在运行中追加（会重建一次前缀缓存）
-        self._active_tools = self._load_tools(plan)
-        self._injected_skills: set[str] = set()
+        state.active_tools = self._load_tools(plan)
+        return self._execute(state)
+
+    def resume(self, state: RunState, supplement: str | None = None) -> str | None:
+        """从挂起状态恢复 Agent Loop。supplement 为用户恢复时的补充指示。
+
+        注意：任务进度可视化按持久化的计划重置重算；已注入的技能指南不会重复注入。
+        """
+        self._init_task_tracking(state.plan())
+        if supplement:
+            state.messages.append({
+                "role": "user",
+                "content": f"<resume_note>运行已恢复。用户补充指示：{supplement}</resume_note>",
+            })
+        state.status = "running"
+        self._tracer.record("run_lifecycle", "resume",
+                            run_id=state.run_id, iteration=state.iteration,
+                            supplement=supplement or "")
+        return self._execute(state)
+
+    def request_interrupt(self) -> None:
+        """请求中断：在下一个安全点（迭代边界 / 卡点等待中）挂起运行。"""
+        self._interrupt_event.set()
+
+    def _execute(self, state: RunState) -> str | None:
+        self._active_tools = state.active_tools
+        self._injected_skills: set[str] = set(state.injected_skills)
+        messages = state.messages
 
         final_text = ""
-        for iteration in range(self._cfg.max_loop_iterations):
-            messages = self._assembler.maybe_compress(messages)
-            response = self._call_model(messages, self._active_tools)
+        try:
+            for iteration in range(state.iteration, self._cfg.max_loop_iterations):
+                if self._interrupt_event.is_set():
+                    raise RunInterrupted
+                state.iteration = iteration
+                messages = self._assembler.maybe_compress(messages)
+                state.messages = messages
+                response = self._call_model(messages, self._active_tools)
 
-            if response.stop_reason == "pause_turn":
-                messages.append({"role": "assistant", "content": response.content})
-                continue
-
-            if response.stop_reason != "tool_use":
-                final_text = self._extract_text(response)
-                break
-
-            # Execute：下发标准数字指令到执行网关；ask_user 由引擎拦截走 HITL
-            messages.append({"role": "assistant", "content": response.content})
-            tool_results = []
-            for block in response.content:
-                if block.type != "tool_use":
+                if response.stop_reason == "pause_turn":
+                    messages.append({"role": "assistant", "content": response.content})
                     continue
-                if block.name == "ask_user":
-                    tool_results.append(self._handle_ask_user(block))
-                elif block.name == "load_skill":
-                    tool_results.append(self._handle_load_skill(block))
-                elif block.name == "read_skill_resource":
-                    tool_results.append(self._handle_read_resource(block))
-                else:
-                    tool_results.append(self._handle_tool_call(block))
-            messages.append({"role": "user", "content": tool_results})
-        else:
-            logger.warning("达到最大迭代轮数 %d，强制收敛", self._cfg.max_loop_iterations)
-            final_text = "审查未在限定步数内完成，请缩小审查范围后重试。"
 
+                if response.stop_reason != "tool_use":
+                    final_text = self._extract_text(response)
+                    break
+
+                # Execute：下发标准数字指令到执行网关；元工具由引擎拦截
+                turn_start = len(messages)  # 中断时回滚到回合边界，保证上下文完整性
+                messages.append({"role": "assistant", "content": response.content})
+                tool_results = []
+                try:
+                    for block in response.content:
+                        if block.type != "tool_use":
+                            continue
+                        if block.name == "ask_user":
+                            tool_results.append(self._handle_ask_user(block))
+                        elif block.name == "load_skill":
+                            tool_results.append(self._handle_load_skill(block))
+                        elif block.name == "read_skill_resource":
+                            tool_results.append(self._handle_read_resource(block))
+                        else:
+                            tool_results.append(self._handle_tool_call(block))
+                except RunInterrupted:
+                    del messages[turn_start:]  # 丢弃未完成的半个回合（恢复后模型会重做）
+                    raise
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                logger.warning("达到最大迭代轮数 %d，强制收敛", self._cfg.max_loop_iterations)
+                final_text = "审查未在限定步数内完成，请缩小审查范围后重试。"
+        except RunInterrupted:
+            self._suspend(state, messages)
+            return None
+
+        state.status = "completed"
+        if self._state_store is not None:
+            self._state_store.delete(state.run_id)
         self._memory.session.record_turn("assistant", final_text[:500])
         return final_text
+
+    def _suspend(self, state: RunState, messages: list[Any]) -> None:
+        """持久化循环现场并挂起。"""
+        self._interrupt_event.clear()
+        state.messages = serialize(messages)
+        state.active_tools = list(self._active_tools)
+        state.injected_skills = sorted(self._injected_skills)
+        state.status = "suspended"
+        if self._state_store is not None:
+            self._state_store.save(state)
+        self._tracer.record("run_lifecycle", "interrupt",
+                            run_id=state.run_id, iteration=state.iteration)
+        self._emitter.emit("interrupted", {
+            "run_id": state.run_id, "iteration": state.iteration,
+            "resumable": self._state_store is not None,
+        })
+        logger.info("运行 %s 已在第 %d 轮挂起", state.run_id, state.iteration)
 
     # ---- 内部：上下文 / 工具装配 ----
 
@@ -357,6 +446,12 @@ class CognitiveEngine:
             checkpoint_id=f"ckpt-{uuid.uuid4().hex[:8]}",
             kind=f"review:{tool_name}",
             payload={"tool": tool_name, "result": outcome.content},
+            options=[
+                CheckpointOption(id="approve", label="批准", action="approve",
+                                 description="确认该结论，继续执行后续子任务", recommended=True),
+                CheckpointOption(id="reject", label="驳回", action="reject",
+                                 description="驳回该结论，Agent 将调整思路后重做"),
+            ],
         )
         span = self._tracer.start_span("checkpoint", checkpoint.kind,
                                        checkpoint_id=checkpoint.checkpoint_id,
@@ -375,11 +470,23 @@ class CognitiveEngine:
 
     def _handle_ask_user(self, block: Any) -> dict[str, Any]:
         question = block.input.get("question", "")
+        options = [
+            CheckpointOption(
+                id=f"opt-{i}",
+                label=o.get("label", ""),
+                description=o.get("description", ""),
+                recommended=bool(o.get("recommended", False)),
+                action="answer",
+            )
+            for i, o in enumerate(block.input.get("options") or [])
+            if o.get("label")
+        ]
         checkpoint = Checkpoint(
             checkpoint_id=f"ask-{uuid.uuid4().hex[:8]}",
             kind="ask_user",
             payload=dict(block.input),
             question=question,
+            options=options,
         )
         span = self._tracer.start_span("checkpoint", "ask_user",
                                        checkpoint_id=checkpoint.checkpoint_id,

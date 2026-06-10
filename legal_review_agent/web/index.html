@@ -110,6 +110,26 @@
   #ckpt-modal .body { padding: 16px 20px; overflow-y: auto; font-size: 14px; line-height: 1.6; }
   #ckpt-modal .body pre { background: #faf9f6; border: 1px solid var(--border); border-radius: 8px;
                           padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  /* 备选项卡片 */
+  #ckpt-options { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+  .opt-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px;
+              cursor: pointer; transition: border-color .15s, background .15s; }
+  .opt-card:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .opt-card .opt-label { font-weight: 600; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+  .opt-card .opt-label .rec { font-size: 11px; color: var(--accent); border: 1px solid var(--accent);
+                              border-radius: 999px; padding: 1px 8px; }
+  .opt-card .opt-desc { color: var(--muted); font-size: 12px; margin-top: 3px; line-height: 1.45; }
+
+  /* 暂停 / 恢复 */
+  #pause-btn { background: none; border: 1px solid var(--border); border-radius: 10px;
+               padding: 0 16px; font-size: 14px; cursor: pointer; color: var(--text); display: none; }
+  #pause-btn:hover { border-color: var(--warn); color: var(--warn); }
+  #resume-bar { display: none; padding: 10px 24px; background: #fdf8ee; border-top: 1px solid var(--warn);
+                font-size: 13px; align-items: center; gap: 12px; }
+  #resume-bar.show { display: flex; }
+  #resume-bar button { background: var(--warn); color: #fff; border: none; border-radius: 8px;
+                       padding: 7px 18px; cursor: pointer; font-size: 13px; }
+
   #ckpt-modal textarea { width: 100%; margin-top: 10px; border: 1px solid var(--border);
                          border-radius: 8px; padding: 8px 10px; font-family: inherit;
                          font-size: 13px; min-height: 64px; }
@@ -132,8 +152,13 @@
 <main>
   <div id="chat-col">
     <div id="messages"></div>
+    <div id="resume-bar">
+      ⏸ 运行已暂停，现场已保存。可在输入框补充指示后恢复。
+      <button onclick="resumeRun()">▶ 恢复运行</button>
+    </div>
     <div id="input-bar">
       <textarea id="input" placeholder="描述审查需求，如：帮我审查一份采购合同的违约责任条款…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="pause-btn" onclick="interruptRun()">⏸ 暂停</button>
       <button id="send-btn">发送</button>
     </div>
   </div>
@@ -161,6 +186,7 @@
     <div class="body">
       <div id="ckpt-question"></div>
       <pre id="ckpt-payload"></pre>
+      <div id="ckpt-options"></div>
       <textarea id="ckpt-input" placeholder="补充回答 / 修改意见 / 驳回原因（可选）"></textarea>
     </div>
     <div class="foot">
@@ -174,9 +200,41 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let currentRunId = null;
+let suspendedRunId = null;
 let streamingEl = null;
 let currentCkptId = null;
 let isAskUser = false;
+
+// ---------- 中断 / 恢复 ----------
+
+async function interruptRun() {
+  if (!currentRunId) return;
+  $('pause-btn').disabled = true;
+  await fetch(`/api/runs/${currentRunId}/interrupt`, {method: 'POST'});
+  // 实际挂起以 interrupted 事件为准（引擎在安全点才停）
+}
+
+async function resumeRun() {
+  if (!suspendedRunId) return;
+  const supplement = $('input').value.trim() || null;
+  $('input').value = '';
+  $('resume-bar').classList.remove('show');
+  const resp = await fetch(`/api/runs/${suspendedRunId}/resume`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({supplement}),
+  });
+  if (!resp.ok) { addChip('❌ 恢复失败：' + (await resp.text()), true); return; }
+  currentRunId = suspendedRunId;
+  suspendedRunId = null;
+  setRunning(true);
+  listen(currentRunId);
+}
+
+function setRunning(running) {
+  $('send-btn').disabled = running;
+  $('pause-btn').style.display = running ? 'block' : 'none';
+  $('pause-btn').disabled = false;
+}
 
 // ---------- 对话 ----------
 
@@ -202,7 +260,9 @@ async function send() {
   const text = $('input').value.trim();
   if (!text || currentRunId) return;
   $('input').value = '';
-  $('send-btn').disabled = true;
+  setRunning(true);
+  suspendedRunId = null;
+  $('resume-bar').classList.remove('show');
   addMsg('user', text);
   resetPlan();
 
@@ -256,6 +316,16 @@ function handleEvent(ev, es) {
       break;
     case 'checkpoint': showCkpt(ev); break;
     case 'checkpoint_resolved': hideCkpt(); break;
+    case 'interrupted':
+      flushStream();
+      hideCkpt();
+      suspendedRunId = ev.run_id;
+      addChip(`⏸ 已在第 ${ev.iteration + 1} 轮暂停，现场已保存`);
+      $('resume-bar').classList.add('show');
+      break;
+    case 'resumed':
+      addChip(`▶ 已从第 ${ev.iteration + 1} 轮恢复运行`);
+      break;
     case 'final':
       flushStream();
       // 流式已经展示过正文则不再重复气泡；短路/旁路场景直接展示
@@ -289,7 +359,7 @@ function flushStream() {
 }
 function finishRun() {
   flushStream();
-  $('send-btn').disabled = false;
+  setRunning(false);
   if (currentRunId) loadTrace(currentRunId);
   currentRunId = null;
 }
@@ -333,9 +403,38 @@ function showCkpt(ev) {
   $('ckpt-question').textContent = ev.question || (isAskUser ? '' : '请审阅以下中间结论：');
   $('ckpt-payload').textContent = JSON.stringify(ev.payload, null, 2);
   $('ckpt-payload').style.display = isAskUser ? 'none' : 'block';
+  renderOptions(ev.options || []);
   $('ckpt-input').value = '';
   $('ckpt-mask').classList.add('show');
   $('ckpt-input').focus();
+}
+
+function renderOptions(options) {
+  const box = $('ckpt-options');
+  box.innerHTML = '';
+  for (const opt of options) {
+    const card = document.createElement('div');
+    card.className = 'opt-card';
+    card.innerHTML = `
+      <div class="opt-label">${esc(opt.label)}${opt.recommended ? '<span class="rec">推荐</span>' : ''}</div>
+      ${opt.description ? `<div class="opt-desc">${esc(opt.description)}</div>` : ''}`;
+    card.onclick = () => selectOption(opt);
+    box.appendChild(card);
+  }
+}
+
+async function selectOption(opt) {
+  if (!currentCkptId) return;
+  const comment = $('ckpt-input').value.trim();
+  await fetch(`/api/checkpoints/${currentCkptId}/resolve`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      action: opt.action,
+      payload: {answer: opt.label, option_id: opt.id},
+      comment,
+    }),
+  });
+  hideCkpt();
 }
 function hideCkpt() { $('ckpt-mask').classList.remove('show'); currentCkptId = null; }
 async function resolveCkpt(action) {

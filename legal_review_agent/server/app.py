@@ -52,20 +52,13 @@ class ResolveRequest(BaseModel):
     comment: str = ""
 
 
-@app.post("/api/chat")
-def start_chat(req: ChatRequest) -> dict:
-    run_id = uuid.uuid4().hex[:12]
-    emitter = EventEmitter()
-    hitl = WebHITLChannel(emitter)
-    tracer = Tracer(run_id)
-    _trace_store.add(tracer)
+def _launch(run_id: str, target) -> None:
+    """统一的运行线程封装：异常透传前端，结束时关闭事件流。"""
+    emitter = _runs[run_id]["emitter"]
 
     def worker() -> None:
         try:
-            _agent.handle(
-                UserInput(text=req.text, session_id=req.session_id),
-                emitter=emitter, tracer=tracer, hitl=hitl,
-            )
+            target()
         except Exception as e:  # noqa: BLE001 — 异常需透传给前端
             logger.exception("运行 %s 失败", run_id)
             emitter.emit("error", {"message": str(e)})
@@ -74,10 +67,71 @@ def start_chat(req: ChatRequest) -> dict:
             emitter.close()
 
     thread = threading.Thread(target=worker, name=f"run-{run_id}", daemon=True)
-    with _runs_lock:
-        _runs[run_id] = {"emitter": emitter, "hitl": hitl, "thread": thread}
+    _runs[run_id]["thread"] = thread
     thread.start()
+
+
+def _register_run(run_id: str) -> dict:
+    emitter = EventEmitter()
+    interrupt_event = threading.Event()
+    hitl = WebHITLChannel(emitter, interrupt_event=interrupt_event)
+    entry = {"emitter": emitter, "hitl": hitl, "interrupt": interrupt_event, "thread": None}
+    with _runs_lock:
+        _runs[run_id] = entry
+    return entry
+
+
+@app.post("/api/chat")
+def start_chat(req: ChatRequest) -> dict:
+    run_id = uuid.uuid4().hex[:12]
+    entry = _register_run(run_id)
+    tracer = Tracer(run_id)
+    _trace_store.add(tracer)
+
+    _launch(run_id, lambda: _agent.handle(
+        UserInput(text=req.text, session_id=req.session_id),
+        emitter=entry["emitter"], tracer=tracer, hitl=entry["hitl"],
+        run_id=run_id, interrupt_event=entry["interrupt"],
+    ))
     return {"run_id": run_id}
+
+
+@app.post("/api/runs/{run_id}/interrupt")
+def interrupt_run(run_id: str) -> dict:
+    """请求中断：引擎在下一个安全点（迭代边界/卡点等待）挂起并持久化现场。"""
+    with _runs_lock:
+        run = _runs.get(run_id)
+    if run is None:
+        raise HTTPException(404, "run 不存在")
+    run["interrupt"].set()
+    return {"ok": True}
+
+
+class ResumeRequest(BaseModel):
+    supplement: str | None = None    # 恢复时附带的用户补充指示
+
+
+@app.post("/api/runs/{run_id}/resume")
+def resume_run(run_id: str, req: ResumeRequest) -> dict:
+    state = _agent.state_store.load(run_id)
+    if state is None or state.status != "suspended":
+        raise HTTPException(404, "运行不存在或不处于挂起状态")
+
+    entry = _register_run(run_id)  # 新事件流替换旧的，前端重新订阅
+    tracer = _trace_store.get(run_id) or Tracer(run_id)
+    _trace_store.add(tracer)
+
+    _launch(run_id, lambda: _agent.resume(
+        run_id, supplement=req.supplement,
+        emitter=entry["emitter"], tracer=tracer, hitl=entry["hitl"],
+        interrupt_event=entry["interrupt"],
+    ))
+    return {"run_id": run_id}
+
+
+@app.get("/api/runs/suspended")
+def list_suspended() -> list[dict]:
+    return _agent.state_store.list_suspended()
 
 
 @app.get("/api/runs/{run_id}/events")

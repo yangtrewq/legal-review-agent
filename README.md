@@ -56,6 +56,22 @@
 - **缓存友好**：L2/L3 一律走 messages 尾部（tool_result），不进 system；`load_skill` 中途追加工具会击穿前缀缓存，该事件以 `cache_invalidated` 标记记入链路；
 - **观测**：每次披露记录 `skill_disclosure` Span（层级/触发方式/估算 token），前端聊天流显示披露气泡，调试抽屉可逐条审阅。
 
+## HITL 增强：中断/恢复 与 卡片选项
+
+**Agent Loop 中断与恢复**：
+- 安全点中断：`POST /api/runs/{id}/interrupt` 置位中断信号，引擎在**迭代边界**或**卡点等待中**响应；
+  执行到一半的工具回合整体回滚（恢复后模型重做），保证上下文完整性；
+- 现场持久化：`engine/run_state.py` 把对话上下文、激活工具集、已注入技能、迭代位置落盘
+  （`RunStateStore`，JSON，可跨进程恢复）；`GET /api/runs/suspended` 列出可恢复的运行；
+- 恢复：`POST /api/runs/{id}/resume`（可附带 `supplement` 补充指示，以 `<resume_note>` 注入上下文）；
+  已注入的技能指南不会重复注入；前端「⏸ 暂停 / ▶ 恢复」按钮 + 恢复条交互。
+
+**备选项卡片 (CheckpointOption)**：
+- `ask_user` 工具支持模型给出 2-4 个候选答案（label/description/recommended），前端以卡片展示，点击即回执；
+- 审查类卡点（`requires_checkpoint` 技能）自动生成「批准（推荐）/ 驳回」标准卡片，
+  卡片自带回执动作（approve/reject/answer），点选与自由文本输入并存；
+- CLI 的 `ConsoleChannel` 同步支持序号选择备选项。
+
 ## 前端交互与链路观测
 
 | 能力 | 模块 | 说明 |

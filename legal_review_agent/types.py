@@ -98,6 +98,22 @@ class ToolExecutionError(Exception):
 
 
 @dataclass
+class CheckpointOption:
+    """卡点的备选项（前端以卡片展示，点击即回执）。"""
+
+    id: str
+    label: str
+    description: str = ""
+    recommended: bool = False
+    # 点击该卡片时回执的 action："approve" / "reject" / "answer" 等
+    action: str = "answer"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "label": self.label, "description": self.description,
+                "recommended": self.recommended, "action": self.action}
+
+
+@dataclass
 class Checkpoint:
     """HITL 执行态卡点：等待法务人员 Review/修改/驳回的中间结论。"""
 
@@ -105,3 +121,8 @@ class Checkpoint:
     kind: str                 # 例如 "risk_confirmation" / "opinion_review" / "ask_user"
     payload: dict[str, Any]
     question: str = ""
+    options: list[CheckpointOption] = field(default_factory=list)
+
+
+class RunInterrupted(Exception):
+    """Agent Loop 被用户中断。引擎捕获后持久化运行状态并挂起，等待恢复。"""

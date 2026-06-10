@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 import anthropic
 
@@ -16,6 +17,7 @@ from .config import DEFAULT_CONFIG, Config
 from .context.context_assembler import ContextAssembler
 from .delivery.hitl import ConsoleChannel, HITLChannel
 from .engine.cognitive_engine import CognitiveEngine
+from .engine.run_state import RunStateStore
 from .executor.action_gateway import ActionGateway
 from .gateway.intent_router import IntentRouter
 from .memory.memory_manager import MemoryManager
@@ -43,6 +45,7 @@ class LegalReviewAgent:
         self._router = IntentRouter(self._client, config)
         self._planner = TaskPlanner(self._client, config, self._registry)
         self._gateway = ActionGateway(self._registry, config.resilience)
+        self.state_store = RunStateStore(config.memory_root)
 
     def handle(
         self,
@@ -50,6 +53,8 @@ class LegalReviewAgent:
         emitter: EventEmitter | None = None,
         tracer: Tracer | None = None,
         hitl: HITLChannel | None = None,
+        run_id: str | None = None,
+        interrupt_event: "threading.Event | None" = None,
     ) -> str:
         emitter = emitter or NoopEmitter()
         tracer = tracer or NoopTracer()
@@ -89,13 +94,7 @@ class LegalReviewAgent:
             return outcome.content
 
         # 主链路：规划 → 组装 → 认知循环 → 交付
-        memory = MemoryManager(self._cfg.memory_root, user_input.session_id)
-        assembler = ContextAssembler(self._client, self._cfg, memory)
-        engine = CognitiveEngine(
-            self._client, self._cfg, self._registry,
-            self._gateway, assembler, memory, hitl,
-            emitter=emitter, tracer=tracer,
-        )
+        engine = self._build_engine(user_input.session_id, hitl, emitter, tracer, interrupt_event)
 
         plan = self._planner.plan(user_input, tracer=tracer)
         logger.info("执行图谱: %s, %d 个子任务", plan.goal, len(plan.tasks))
@@ -105,10 +104,59 @@ class LegalReviewAgent:
             "tasks": [t.__dict__ for t in plan.tasks],
         })
 
-        report = engine.run(user_input, plan)
+        report = engine.run(user_input, plan, run_id=run_id)
+        if report is None:
+            return ""  # 已挂起：interrupted 事件由引擎发出，状态已持久化
         emitter.emit("final", {"text": report})
         hitl.deliver("审查报告", report)
         return report
+
+    def resume(
+        self,
+        run_id: str,
+        supplement: str | None = None,
+        emitter: EventEmitter | None = None,
+        tracer: Tracer | None = None,
+        hitl: HITLChannel | None = None,
+        interrupt_event: "threading.Event | None" = None,
+    ) -> str:
+        """恢复一个挂起的运行；supplement 为用户恢复时附带的补充指示。"""
+        emitter = emitter or NoopEmitter()
+        tracer = tracer or NoopTracer()
+        hitl = hitl or self._hitl
+
+        state = self.state_store.load(run_id)
+        if state is None or state.status != "suspended":
+            raise ValueError(f"运行 {run_id} 不存在或不处于挂起状态")
+
+        engine = self._build_engine(state.session_id, hitl, emitter, tracer, interrupt_event)
+        # 恢复时把执行图谱重推前端，任务清单重新渲染
+        emitter.emit("plan", {"goal": state.goal, "tasks": state.tasks})
+        emitter.emit("resumed", {"run_id": run_id, "iteration": state.iteration})
+
+        report = engine.resume(state, supplement=supplement)
+        if report is None:
+            return ""  # 再次被挂起
+        emitter.emit("final", {"text": report})
+        hitl.deliver("审查报告", report)
+        return report
+
+    def _build_engine(
+        self,
+        session_id: str,
+        hitl: HITLChannel,
+        emitter: EventEmitter,
+        tracer: Tracer,
+        interrupt_event: "threading.Event | None",
+    ) -> CognitiveEngine:
+        memory = MemoryManager(self._cfg.memory_root, session_id)
+        assembler = ContextAssembler(self._client, self._cfg, memory)
+        return CognitiveEngine(
+            self._client, self._cfg, self._registry,
+            self._gateway, assembler, memory, hitl,
+            emitter=emitter, tracer=tracer,
+            state_store=self.state_store, interrupt_event=interrupt_event,
+        )
 
 
 def main() -> None:

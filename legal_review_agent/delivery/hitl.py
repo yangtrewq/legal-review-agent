@@ -45,9 +45,16 @@ class ConsoleChannel(HITLChannel):
         if checkpoint.question:
             print(f"问题：{checkpoint.question}")
         print(f"内容：{checkpoint.payload}")
-        answer = input("请输入处理意见（直接回车=approve；其他输入视为补充回答/修改意见）：").strip()
+        for i, opt in enumerate(checkpoint.options, start=1):
+            mark = "（推荐）" if opt.recommended else ""
+            print(f"  [{i}] {opt.label}{mark} — {opt.description}")
+        answer = input("请输入序号选择备选项，或直接输入文字回答（回车=approve）：").strip()
         if not answer:
             return CheckpointResolution(action="approve")
+        if answer.isdigit() and 1 <= int(answer) <= len(checkpoint.options):
+            opt = checkpoint.options[int(answer) - 1]
+            return CheckpointResolution(action=opt.action,
+                                        payload={"answer": opt.label, "option_id": opt.id})
         return CheckpointResolution(action="answer", payload={"answer": answer})
 
     def deliver(self, title: str, content: str) -> None:

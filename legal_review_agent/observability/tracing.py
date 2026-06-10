@@ -22,7 +22,8 @@ from typing import Any
 def serialize(obj: Any) -> Any:
     """把含 SDK Pydantic 对象的消息结构转为可 JSON 化的纯数据。"""
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        # exclude_none：序列化结果可能回喂给 Messages API（中断恢复场景），剔除空字段
+        return obj.model_dump(exclude_none=True)
     if isinstance(obj, dict):
         return {k: serialize(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
