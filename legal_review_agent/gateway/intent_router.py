@@ -46,17 +46,24 @@ class IntentRouter:
         self._client = client
         self._cfg = config
 
-    def route(self, user_input: UserInput) -> RoutingDecision:
+    def route(self, user_input: UserInput, tracer=None) -> RoutingDecision:
         has_docs = f"（用户附带了 {len(user_input.documents)} 份文档）" if user_input.documents else ""
+        messages = [{"role": "user", "content": f"{user_input.text}{has_docs}"}]
+        span = tracer.start_span(
+            "model_request", self._cfg.models.router_model,
+            stage="routing", system=_SYSTEM, messages=messages,
+        ) if tracer else None
         response = self._client.messages.create(
             model=self._cfg.models.router_model,
             max_tokens=self._cfg.models.router_max_tokens,
             system=_SYSTEM,
             output_config={"format": {"type": "json_schema", "schema": _ROUTING_SCHEMA}},
-            messages=[{"role": "user", "content": f"{user_input.text}{has_docs}"}],
+            messages=messages,
         )
         text = next(b.text for b in response.content if b.type == "text")
         data = json.loads(text)
+        if tracer:
+            tracer.end_span(span, decision=data, usage=response.usage)
         return RoutingDecision(
             intent=MacroIntent(data["intent"]),
             confidence=float(data["confidence"]),

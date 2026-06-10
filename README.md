@@ -40,12 +40,29 @@
   追问获得的参数沉淀到会话记忆，后续轮次不再重复询问。
 - **前缀缓存友好**：静态系统提示词禁止插入时间戳/会话 ID 等易变内容；动态上下文统一放在 messages 内。
 
+## 前端交互与链路观测
+
+| 能力 | 模块 | 说明 |
+|---|---|---|
+| Web 服务端 | `server/app.py` | FastAPI：`POST /api/chat` 发起运行；`GET /api/runs/{id}/events` SSE 事件流；`POST /api/checkpoints/{id}/resolve` HITL 回执；`GET /api/runs/{id}/trace` 链路查询 |
+| 前端单页 | `web/index.html` | 零构建：对话流式输出（text_delta 增量渲染）、Plan 任务清单进度可视化（pending/running/done）、工具调用气泡、HITL 卡点弹窗（批准/回答/驳回） |
+| 运行时事件流 | `observability/events.py` | `EventEmitter` 线程安全队列：routing / plan / task_status / text_delta / tool_start|end / checkpoint / final / done |
+| 链路观测 | `observability/tracing.py` | 按 run_id 记录 Span：**model_request 含完整组装后的 system/messages/tools**、tool_call 含下发指令与执行结果及耗时、routing/planning/checkpoint；前端"链路调试"抽屉可逐 Span 审阅 |
+| Web HITL 通道 | `delivery/web_channel.py` | 卡点经 SSE 推前端，引擎线程阻塞等回执；超时自动驳回兜底 |
+
+任务进度采用启发式映射：子任务 `suggested_skills` 全部成功执行即标记完成，引擎逐事件推送 `task_status`。
+
 ## 快速开始
 
 ```bash
 pip install -e ".[dev]"
 export ANTHROPIC_API_KEY=sk-ant-...
-python -m legal_review_agent.app     # 交互式 CLI（本地用 ConsoleChannel 模拟 Eureka X 卡点）
+
+# Web 模式（推荐）：对话流式输出 + 任务进度 + 链路调试
+uvicorn legal_review_agent.server.app:app --port 8000
+# 浏览器打开 http://localhost:8000
+
+python -m legal_review_agent.app     # 或：交互式 CLI（ConsoleChannel 模拟卡点）
 pytest                               # 运行测试（不依赖 API Key）
 ```
 

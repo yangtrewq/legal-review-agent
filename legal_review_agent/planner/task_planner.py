@@ -64,17 +64,25 @@ class TaskPlanner:
         self._cfg = config
         self._registry = registry
 
-    def plan(self, user_input: UserInput) -> ExecutionPlan:
+    def plan(self, user_input: UserInput, tracer=None) -> ExecutionPlan:
+        system = _SYSTEM_TEMPLATE.format(catalog=self._registry.catalog())
+        messages = [{"role": "user", "content": f"审查需求：{user_input.text}"}]
+        span = tracer.start_span(
+            "model_request", self._cfg.models.engine_model,
+            stage="planning", system=system, messages=messages,
+        ) if tracer else None
         response = self._client.messages.create(
             model=self._cfg.models.engine_model,
             max_tokens=self._cfg.models.engine_max_tokens,
             thinking={"type": "adaptive"},
-            system=_SYSTEM_TEMPLATE.format(catalog=self._registry.catalog()),
+            system=system,
             output_config={"format": {"type": "json_schema", "schema": _PLAN_SCHEMA}},
-            messages=[{"role": "user", "content": f"审查需求：{user_input.text}"}],
+            messages=messages,
         )
         text = next(b.text for b in response.content if b.type == "text")
         data = json.loads(text)
+        if tracer:
+            tracer.end_span(span, plan=data, usage=response.usage)
         plan = ExecutionPlan(
             goal=data["goal"],
             tasks=[SubTask(**t) for t in data["tasks"]],

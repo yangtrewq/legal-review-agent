@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>法律评审 Agent</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --border: #e3e0d8; --text: #2b2a26;
+    --muted: #8a857a; --accent: #b05c3c; --accent-soft: #f3e6df;
+    --ok: #4a7c59; --warn: #b08b3c; --err: #a94436;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
+           display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 17px; font-weight: 600; }
+  header .badge { font-size: 12px; color: var(--muted); }
+  header .spacer { flex: 1; }
+  header button { background: none; border: 1px solid var(--border); border-radius: 6px;
+                  padding: 6px 14px; cursor: pointer; font-size: 13px; color: var(--text); }
+  header button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+  main { flex: 1; display: flex; min-height: 0; }
+
+  /* 对话区 */
+  #chat-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #messages { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 78%; padding: 12px 16px; border-radius: 12px; line-height: 1.65;
+         font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid var(--border);
+                   border-bottom-left-radius: 4px; }
+  .msg .cursor { display: inline-block; width: 7px; height: 15px; background: var(--accent);
+                 vertical-align: text-bottom; animation: blink 0.9s infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .sys-note { align-self: center; font-size: 12px; color: var(--muted); }
+  .tool-chip { align-self: flex-start; font-size: 12px; color: var(--muted);
+               background: var(--panel); border: 1px dashed var(--border);
+               border-radius: 999px; padding: 4px 12px; }
+  .tool-chip.err { color: var(--err); border-color: var(--err); }
+
+  #input-bar { padding: 14px 24px; border-top: 1px solid var(--border); background: var(--panel);
+               display: flex; gap: 10px; }
+  #input-bar textarea { flex: 1; resize: none; border: 1px solid var(--border); border-radius: 10px;
+                        padding: 10px 14px; font-size: 14px; font-family: inherit; height: 48px; outline: none; }
+  #input-bar textarea:focus { border-color: var(--accent); }
+  #send-btn { background: var(--accent); color: #fff; border: none; border-radius: 10px;
+              padding: 0 22px; font-size: 14px; cursor: pointer; }
+  #send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* 右侧：任务清单 */
+  #side-col { width: 320px; border-left: 1px solid var(--border); background: var(--panel);
+              display: flex; flex-direction: column; overflow-y: auto; }
+  .panel-title { padding: 14px 18px 8px; font-size: 13px; font-weight: 600; color: var(--muted);
+                 letter-spacing: 0.05em; }
+  #plan-goal { padding: 0 18px 10px; font-size: 13px; line-height: 1.5; }
+  #plan-list { list-style: none; padding: 0 18px 18px; display: flex; flex-direction: column; gap: 8px; }
+  .task { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+          border: 1px solid var(--border); border-radius: 10px; font-size: 13px; }
+  .task .icon { width: 18px; flex-shrink: 0; text-align: center; }
+  .task .name { font-weight: 600; }
+  .task .desc { color: var(--muted); font-size: 12px; margin-top: 2px; line-height: 1.45; }
+  .task .deps { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .task.pending  { opacity: 0.75; }
+  .task.running  { border-color: var(--warn); background: #fdf8ee; }
+  .task.running .icon { animation: spin 1.2s linear infinite; display: inline-block; }
+  .task.done     { border-color: var(--ok); background: #f0f6f1; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #routing-info { padding: 0 18px 12px; font-size: 12px; color: var(--muted); }
+
+  /* 调试抽屉 */
+  #debug-drawer { position: fixed; right: 0; top: 0; bottom: 0; width: min(720px, 90vw);
+                  background: var(--panel); border-left: 1px solid var(--border);
+                  transform: translateX(100%); transition: transform 0.25s ease; z-index: 50;
+                  display: flex; flex-direction: column; box-shadow: -8px 0 24px rgba(0,0,0,0.08); }
+  #debug-drawer.open { transform: translateX(0); }
+  #debug-head { padding: 14px 18px; border-bottom: 1px solid var(--border);
+                display: flex; align-items: center; gap: 10px; }
+  #debug-head h2 { font-size: 15px; flex: 1; }
+  #debug-body { flex: 1; overflow-y: auto; padding: 14px 18px; }
+  .span-item { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+  .span-head { display: flex; gap: 10px; align-items: center; padding: 10px 14px; cursor: pointer;
+               font-size: 13px; background: #faf9f6; }
+  .span-head:hover { background: var(--accent-soft); }
+  .span-kind { font-size: 11px; padding: 2px 8px; border-radius: 999px; color: #fff; }
+  .span-kind.model_request { background: #5c6bc0; }
+  .span-kind.tool_call     { background: var(--ok); }
+  .span-kind.routing       { background: var(--warn); }
+  .span-kind.planning      { background: var(--accent); }
+  .span-kind.checkpoint    { background: var(--err); }
+  .span-name { font-weight: 600; flex: 1; }
+  .span-dur  { color: var(--muted); font-size: 12px; }
+  .span-detail { display: none; padding: 12px 14px; border-top: 1px solid var(--border); }
+  .span-item.open .span-detail { display: block; }
+  .span-detail h4 { font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  .span-detail pre { background: #2b2a26; color: #e8e6e0; border-radius: 8px; padding: 12px;
+                     font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+                     max-height: 420px; overflow-y: auto; }
+
+  /* 卡点弹窗 */
+  #ckpt-mask { position: fixed; inset: 0; background: rgba(40,38,33,0.45); z-index: 100;
+               display: none; align-items: center; justify-content: center; }
+  #ckpt-mask.show { display: flex; }
+  #ckpt-modal { background: var(--panel); border-radius: 14px; width: min(640px, 92vw);
+                max-height: 80vh; display: flex; flex-direction: column; }
+  #ckpt-modal .head { padding: 16px 20px; border-bottom: 1px solid var(--border); font-weight: 600; }
+  #ckpt-modal .body { padding: 16px 20px; overflow-y: auto; font-size: 14px; line-height: 1.6; }
+  #ckpt-modal .body pre { background: #faf9f6; border: 1px solid var(--border); border-radius: 8px;
+                          padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+  #ckpt-modal textarea { width: 100%; margin-top: 10px; border: 1px solid var(--border);
+                         border-radius: 8px; padding: 8px 10px; font-family: inherit;
+                         font-size: 13px; min-height: 64px; }
+  #ckpt-modal .foot { padding: 14px 20px; border-top: 1px solid var(--border);
+                      display: flex; gap: 10px; justify-content: flex-end; }
+  #ckpt-modal .foot button { border-radius: 8px; padding: 8px 18px; font-size: 13px;
+                             cursor: pointer; border: 1px solid var(--border); background: var(--panel); }
+  #ckpt-modal .foot .approve { background: var(--ok); border-color: var(--ok); color: #fff; }
+  #ckpt-modal .foot .reject  { color: var(--err); border-color: var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚖️ 法律评审 Agent</h1>
+  <span class="badge">Plan-and-Execute · 控制面/数据面解耦</span>
+  <div class="spacer"></div>
+  <button id="debug-btn">🔍 链路调试</button>
+</header>
+
+<main>
+  <div id="chat-col">
+    <div id="messages"></div>
+    <div id="input-bar">
+      <textarea id="input" placeholder="描述审查需求，如：帮我审查一份采购合同的违约责任条款…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="send-btn">发送</button>
+    </div>
+  </div>
+
+  <div id="side-col">
+    <div class="panel-title">执行计划</div>
+    <div id="routing-info">等待任务…</div>
+    <div id="plan-goal"></div>
+    <ul id="plan-list"></ul>
+  </div>
+</main>
+
+<div id="debug-drawer">
+  <div id="debug-head">
+    <h2>链路观测</h2>
+    <button onclick="loadTrace()">刷新</button>
+    <button onclick="document.getElementById('debug-drawer').classList.remove('open')">关闭</button>
+  </div>
+  <div id="debug-body"><p style="color:var(--muted);font-size:13px;">运行一次任务后查看链路。</p></div>
+</div>
+
+<div id="ckpt-mask">
+  <div id="ckpt-modal">
+    <div class="head" id="ckpt-title">人工卡点</div>
+    <div class="body">
+      <div id="ckpt-question"></div>
+      <pre id="ckpt-payload"></pre>
+      <textarea id="ckpt-input" placeholder="补充回答 / 修改意见 / 驳回原因（可选）"></textarea>
+    </div>
+    <div class="foot">
+      <button class="reject" onclick="resolveCkpt('reject')">驳回</button>
+      <button onclick="resolveCkpt('answer')">提交回答</button>
+      <button class="approve" onclick="resolveCkpt('approve')">批准</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentRunId = null;
+let streamingEl = null;
+let currentCkptId = null;
+let isAskUser = false;
+
+// ---------- 对话 ----------
+
+function addMsg(role, text) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + role;
+  el.textContent = text;
+  $('messages').appendChild(el);
+  scrollBottom();
+  return el;
+}
+function addChip(text, isErr) {
+  const el = document.createElement('div');
+  el.className = 'tool-chip' + (isErr ? ' err' : '');
+  el.textContent = text;
+  $('messages').appendChild(el);
+  scrollBottom();
+  return el;
+}
+function scrollBottom() { $('messages').scrollTop = $('messages').scrollHeight; }
+
+async function send() {
+  const text = $('input').value.trim();
+  if (!text || currentRunId) return;
+  $('input').value = '';
+  $('send-btn').disabled = true;
+  addMsg('user', text);
+  resetPlan();
+
+  const resp = await fetch('/api/chat', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text, session_id: 'web'}),
+  });
+  const {run_id} = await resp.json();
+  currentRunId = run_id;
+  listen(run_id);
+}
+
+function listen(runId) {
+  const es = new EventSource(`/api/runs/${runId}/events`);
+  es.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    handleEvent(ev, es);
+  };
+  es.onerror = () => { es.close(); finishRun(); };
+}
+
+function handleEvent(ev, es) {
+  switch (ev.type) {
+    case 'routing':
+      $('routing-info').textContent = `意图：${ev.intent}（置信度 ${(ev.confidence*100).toFixed(0)}%）— ${ev.reason}`;
+      break;
+    case 'plan': renderPlan(ev); break;
+    case 'task_status': setTaskStatus(ev.task_id, ev.status); break;
+    case 'text_delta':
+      if (!streamingEl) {
+        streamingEl = addMsg('assistant', '');
+        streamingEl.insertAdjacentHTML('beforeend', '<span class="cursor"></span>');
+      }
+      streamingEl.querySelector('.cursor').insertAdjacentText('beforebegin', ev.text);
+      scrollBottom();
+      break;
+    case 'tool_start':
+      flushStream();
+      addChip(`🔧 ${ev.tool_name} 调用中…`);
+      break;
+    case 'tool_end': {
+      const chips = document.querySelectorAll('.tool-chip');
+      const last = [...chips].reverse().find(c => c.textContent.includes(ev.tool_name));
+      const label = ev.is_error ? `❌ ${ev.tool_name} 失败` : `✅ ${ev.tool_name} 完成`;
+      if (last) { last.textContent = label; last.classList.toggle('err', ev.is_error); }
+      else addChip(label, ev.is_error);
+      break;
+    }
+    case 'checkpoint': showCkpt(ev); break;
+    case 'checkpoint_resolved': hideCkpt(); break;
+    case 'final':
+      flushStream();
+      // 流式已经展示过正文则不再重复气泡；短路/旁路场景直接展示
+      if (!document.querySelector('#messages .msg.assistant:last-of-type') ||
+          ev.text !== lastAssistantText()) {
+        if (!lastAssistantText()) addMsg('assistant', ev.text);
+      }
+      break;
+    case 'error':
+      flushStream();
+      addChip(`❌ 运行异常：${ev.message}`, true);
+      break;
+    case 'done':
+      es.close();
+      finishRun();
+      break;
+  }
+}
+
+function lastAssistantText() {
+  const list = document.querySelectorAll('#messages .msg.assistant');
+  return list.length ? list[list.length - 1].textContent : '';
+}
+function flushStream() {
+  if (streamingEl) {
+    const c = streamingEl.querySelector('.cursor');
+    if (c) c.remove();
+    if (!streamingEl.textContent.trim()) streamingEl.remove();
+    streamingEl = null;
+  }
+}
+function finishRun() {
+  flushStream();
+  $('send-btn').disabled = false;
+  if (currentRunId) loadTrace(currentRunId);
+  currentRunId = null;
+}
+
+// ---------- 任务清单 ----------
+
+function resetPlan() {
+  $('plan-goal').textContent = '';
+  $('plan-list').innerHTML = '';
+  $('routing-info').textContent = '路由中…';
+}
+function renderPlan(ev) {
+  $('plan-goal').textContent = '🎯 ' + ev.goal;
+  $('plan-list').innerHTML = '';
+  for (const t of ev.tasks) {
+    const li = document.createElement('li');
+    li.className = 'task pending';
+    li.id = 'task-' + t.id;
+    li.innerHTML = `<span class="icon">○</span><div>
+        <div class="name">${esc(t.name)}</div>
+        <div class="desc">${esc(t.description)}</div>
+        ${t.depends_on.length ? `<div class="deps">依赖: ${t.depends_on.join(', ')}</div>` : ''}
+      </div>`;
+    $('plan-list').appendChild(li);
+  }
+}
+function setTaskStatus(taskId, status) {
+  const li = $('task-' + taskId);
+  if (!li) return;
+  li.className = 'task ' + status;
+  li.querySelector('.icon').textContent = status === 'done' ? '✔' : status === 'running' ? '◐' : '○';
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+
+// ---------- HITL 卡点 ----------
+
+function showCkpt(ev) {
+  currentCkptId = ev.checkpoint_id;
+  isAskUser = ev.kind === 'ask_user';
+  $('ckpt-title').textContent = isAskUser ? '🙋 Agent 追问' : `🛑 人工卡点 · ${ev.kind}`;
+  $('ckpt-question').textContent = ev.question || (isAskUser ? '' : '请审阅以下中间结论：');
+  $('ckpt-payload').textContent = JSON.stringify(ev.payload, null, 2);
+  $('ckpt-payload').style.display = isAskUser ? 'none' : 'block';
+  $('ckpt-input').value = '';
+  $('ckpt-mask').classList.add('show');
+  $('ckpt-input').focus();
+}
+function hideCkpt() { $('ckpt-mask').classList.remove('show'); currentCkptId = null; }
+async function resolveCkpt(action) {
+  if (!currentCkptId) return;
+  const text = $('ckpt-input').value.trim();
+  const body = {action, comment: text};
+  if (action === 'answer') body.payload = {answer: text || '（用户未填写）'};
+  await fetch(`/api/checkpoints/${currentCkptId}/resolve`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  hideCkpt();
+}
+
+// ---------- 链路调试 ----------
+
+$('debug-btn').onclick = () => {
+  $('debug-drawer').classList.toggle('open');
+  loadTrace();
+};
+let lastTraceRunId = null;
+async function loadTrace(runId) {
+  if (runId) lastTraceRunId = runId;
+  if (!lastTraceRunId) {
+    const runs = await (await fetch('/api/runs')).json();
+    if (!runs.length) return;
+    lastTraceRunId = runs[0].run_id;
+  }
+  const trace = await (await fetch(`/api/runs/${lastTraceRunId}/trace`)).json();
+  renderTrace(trace);
+}
+function renderTrace(trace) {
+  const body = $('debug-body');
+  body.innerHTML = `<p style="color:var(--muted);font-size:12px;margin-bottom:10px;">
+    run_id: ${trace.run_id} · ${trace.spans.length} spans</p>`;
+  for (const span of trace.spans) {
+    const item = document.createElement('div');
+    item.className = 'span-item';
+    const sections = renderSpanDetail(span);
+    item.innerHTML = `
+      <div class="span-head">
+        <span class="span-kind ${span.kind}">${span.kind}</span>
+        <span class="span-name">${esc(span.name)}</span>
+        <span class="span-dur">${span.duration_ms != null ? span.duration_ms + ' ms' : ''}</span>
+      </div>
+      <div class="span-detail">${sections}</div>`;
+    item.querySelector('.span-head').onclick = () => item.classList.toggle('open');
+    body.appendChild(item);
+  }
+}
+function renderSpanDetail(span) {
+  const p = span.payload || {};
+  let html = '';
+  if (p.system) html += section('System（组装后的系统提示词）', p.system);
+  if (p.messages) html += section('Messages（组装后的对话上下文）', p.messages);
+  if (p.tool_schemas) html += section('Tools（本轮加载的工具 Schema）', p.tool_schemas);
+  if (p.instruction) html += section('下发指令 (ToolInstruction)', p.instruction);
+  if (p.result !== undefined) html += section('执行结果', p.result);
+  if (p.response_content) html += section('模型响应', p.response_content);
+  if (p.usage) html += section('Token 用量', p.usage);
+  const rest = Object.fromEntries(Object.entries(p).filter(([k]) =>
+    !['system','messages','tool_schemas','instruction','result','response_content','usage'].includes(k)));
+  if (Object.keys(rest).length) html += section('其他', rest);
+  return html || '<p style="color:var(--muted);font-size:12px;">无详情</p>';
+}
+function section(title, data) {
+  const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  return `<h4>${title}</h4><pre>${esc(text)}</pre>`;
+}
+
+// ---------- 输入 ----------
+
+$('send-btn').onclick = send;
+$('input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+</script>
+</body>
+</html>

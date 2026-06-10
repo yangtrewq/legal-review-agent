@@ -19,6 +19,8 @@ from .engine.cognitive_engine import CognitiveEngine
 from .executor.action_gateway import ActionGateway
 from .gateway.intent_router import IntentRouter
 from .memory.memory_manager import MemoryManager
+from .observability.events import EventEmitter, NoopEmitter
+from .observability.tracing import NoopTracer, Tracer
 from .planner.task_planner import TaskPlanner
 from .registry.tool_registry import ToolRegistry
 from .skills.builtin import register_builtin_skills
@@ -42,25 +44,48 @@ class LegalReviewAgent:
         self._planner = TaskPlanner(self._client, config, self._registry)
         self._gateway = ActionGateway(self._registry, config.resilience)
 
-    def handle(self, user_input: UserInput) -> str:
+    def handle(
+        self,
+        user_input: UserInput,
+        emitter: EventEmitter | None = None,
+        tracer: Tracer | None = None,
+        hitl: HITLChannel | None = None,
+    ) -> str:
+        emitter = emitter or NoopEmitter()
+        tracer = tracer or NoopTracer()
+        hitl = hitl or self._hitl
+
         # 1. 意图路由：宏观定性 + 边界裁决
-        decision = self._router.route(user_input)
+        decision = self._router.route(user_input, tracer=tracer)
         logger.info("路由结果: %s (%.2f) %s", decision.intent, decision.confidence, decision.reason)
+        tracer.record("routing", decision.intent.value,
+                      confidence=decision.confidence, reason=decision.reason)
+        emitter.emit("routing", {
+            "intent": decision.intent.value,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+        })
 
         # 短路链路：闲聊 / 超纲 → 兜底回复
         if decision.intent in (MacroIntent.CHITCHAT, MacroIntent.OUT_OF_SCOPE):
             reply = IntentRouter.fallback_reply(decision)
-            self._hitl.deliver("回复", reply)
+            emitter.emit("final", {"text": reply})
+            hitl.deliver("回复", reply)
             return reply
 
         # 旁路链路：单一检索 → 直接调用简单工具，跳过复杂规划
         if decision.intent == MacroIntent.PURE_RETRIEVAL:
-            outcome = self._gateway.execute_safe(ToolInstruction(
+            instruction = ToolInstruction(
                 tool_use_id="bypass-retrieval",
                 tool_name="search_legal_knowledge",
                 arguments={"query": user_input.text},
-            ))
-            self._hitl.deliver("检索结果", outcome.content)
+            )
+            span = tracer.start_span("tool_call", instruction.tool_name,
+                                     instruction=instruction.__dict__)
+            outcome = self._gateway.execute_safe(instruction)
+            tracer.end_span(span, is_error=outcome.is_error, result=outcome.content)
+            emitter.emit("final", {"text": outcome.content})
+            hitl.deliver("检索结果", outcome.content)
             return outcome.content
 
         # 主链路：规划 → 组装 → 认知循环 → 交付
@@ -68,14 +93,21 @@ class LegalReviewAgent:
         assembler = ContextAssembler(self._client, self._cfg, memory)
         engine = CognitiveEngine(
             self._client, self._cfg, self._registry,
-            self._gateway, assembler, memory, self._hitl,
+            self._gateway, assembler, memory, hitl,
+            emitter=emitter, tracer=tracer,
         )
 
-        plan = self._planner.plan(user_input)
+        plan = self._planner.plan(user_input, tracer=tracer)
         logger.info("执行图谱: %s, %d 个子任务", plan.goal, len(plan.tasks))
+        tracer.record("planning", plan.goal, tasks=[t.__dict__ for t in plan.tasks])
+        emitter.emit("plan", {
+            "goal": plan.goal,
+            "tasks": [t.__dict__ for t in plan.tasks],
+        })
 
         report = engine.run(user_input, plan)
-        self._hitl.deliver("审查报告", report)
+        emitter.emit("final", {"text": report})
+        hitl.deliver("审查报告", report)
         return report
 
 

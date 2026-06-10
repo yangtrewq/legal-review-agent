@@ -6,6 +6,8 @@ requires-python = ">=3.10"
 dependencies = [
     "anthropic>=0.50.0",
     "pydantic>=2.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
@@ -20,3 +22,6 @@ include = ["legal_review_agent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+legal_review_agent = ["web/*.html"]

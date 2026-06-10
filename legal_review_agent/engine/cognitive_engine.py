@@ -24,6 +24,8 @@ from ..config import Config
 from ..context.context_assembler import ContextAssembler
 from ..delivery.hitl import HITLChannel
 from ..memory.memory_manager import MemoryManager
+from ..observability.events import EventEmitter, NoopEmitter
+from ..observability.tracing import NoopTracer, Tracer
 from ..registry.tool_registry import ToolRegistry
 from ..types import Checkpoint, ExecutionPlan, ToolInstruction, UserInput
 from ..executor.action_gateway import ActionGateway
@@ -55,6 +57,8 @@ class CognitiveEngine:
         assembler: ContextAssembler,
         memory: MemoryManager,
         hitl: HITLChannel,
+        emitter: EventEmitter | None = None,
+        tracer: Tracer | None = None,
     ):
         self._client = client
         self._cfg = config
@@ -63,11 +67,18 @@ class CognitiveEngine:
         self._assembler = assembler
         self._memory = memory
         self._hitl = hitl
+        self._emitter = emitter or NoopEmitter()
+        self._tracer = tracer or NoopTracer()
+        # 任务进度可视化：技能 → 子任务的映射与完成度（启发式：
+        # 子任务 suggested_skills 全部成功执行过即视为完成）
+        self._skill_to_tasks: dict[str, list[str]] = {}
+        self._task_pending_skills: dict[str, set[str]] = {}
 
     # ---- 对外入口 ----
 
     def run(self, user_input: UserInput, plan: ExecutionPlan) -> str:
         """按执行图谱驱动 Agentic Loop，返回最终审查产出文本。"""
+        self._init_task_tracking(plan)
         messages = self._bootstrap_messages(user_input, plan)
         tools = self._load_tools(plan)
 
@@ -137,24 +148,72 @@ class CognitiveEngine:
         return self._registry.load_schemas(names) + [ASK_USER_TOOL]
 
     def _call_model(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]):
+        system = self._assembler.build_system()
+        # 链路观测：记录本次完整组装后的提示词（system / messages / tools）
+        span = self._tracer.start_span(
+            "model_request", self._cfg.models.engine_model,
+            system=system, messages=messages, tools=[t["name"] for t in tools],
+            tool_schemas=tools,
+        )
         with self._client.messages.stream(
             model=self._cfg.models.engine_model,
             max_tokens=self._cfg.models.engine_max_tokens,
             thinking={"type": "adaptive"},
             output_config={"effort": self._cfg.models.effort},
-            system=self._assembler.build_system(),
+            system=system,
             tools=tools,
             messages=messages,
         ) as stream:
-            return stream.get_final_message()
+            for event in stream:
+                if event.type == "content_block_delta" and event.delta.type == "text_delta":
+                    self._emitter.emit("text_delta", {"text": event.delta.text})
+            response = stream.get_final_message()
+        self._tracer.end_span(
+            span,
+            stop_reason=response.stop_reason,
+            usage=response.usage,
+            response_content=response.content,
+        )
+        return response
 
     # ---- 内部：工具调用 / 追问 / 卡点 ----
+
+    def _init_task_tracking(self, plan: ExecutionPlan) -> None:
+        self._skill_to_tasks.clear()
+        self._task_pending_skills.clear()
+        for task in plan.tasks:
+            if task.suggested_skills:
+                self._task_pending_skills[task.id] = set(task.suggested_skills)
+                for skill in task.suggested_skills:
+                    self._skill_to_tasks.setdefault(skill, []).append(task.id)
+
+    def _update_task_progress(self, skill: str, succeeded: bool) -> None:
+        for task_id in self._skill_to_tasks.get(skill, []):
+            pending = self._task_pending_skills.get(task_id)
+            if pending is None:
+                continue
+            self._emitter.emit("task_status", {"task_id": task_id, "status": "running"})
+            if succeeded:
+                pending.discard(skill)
+                if not pending:
+                    del self._task_pending_skills[task_id]
+                    self._emitter.emit("task_status", {"task_id": task_id, "status": "done"})
 
     def _handle_tool_call(self, block: Any) -> dict[str, Any]:
         instruction = ToolInstruction(
             tool_use_id=block.id, tool_name=block.name, arguments=dict(block.input)
         )
+        self._emitter.emit("tool_start", {
+            "tool_use_id": block.id, "tool_name": block.name, "arguments": instruction.arguments,
+        })
+        for task_id in self._skill_to_tasks.get(block.name, []):
+            if task_id in self._task_pending_skills:
+                self._emitter.emit("task_status", {"task_id": task_id, "status": "running"})
+
+        span = self._tracer.start_span("tool_call", block.name,
+                                       instruction=instruction.__dict__)
         outcome = self._gateway.execute_safe(instruction)
+        self._tracer.end_span(span, is_error=outcome.is_error, result=outcome.content)
 
         if not outcome.is_error:
             spec = self._registry.get(block.name)
@@ -162,6 +221,11 @@ class CognitiveEngine:
             if spec.requires_checkpoint:
                 outcome = self._run_checkpoint(block.name, outcome)
 
+        self._update_task_progress(block.name, succeeded=not outcome.is_error)
+        self._emitter.emit("tool_end", {
+            "tool_use_id": outcome.tool_use_id, "tool_name": block.name,
+            "is_error": outcome.is_error, "preview": outcome.content[:300],
+        })
         return {
             "type": "tool_result",
             "tool_use_id": outcome.tool_use_id,
@@ -170,11 +234,16 @@ class CognitiveEngine:
         }
 
     def _run_checkpoint(self, tool_name: str, outcome):
-        resolution = self._hitl.raise_checkpoint(Checkpoint(
+        checkpoint = Checkpoint(
             checkpoint_id=f"ckpt-{uuid.uuid4().hex[:8]}",
             kind=f"review:{tool_name}",
             payload={"tool": tool_name, "result": outcome.content},
-        ))
+        )
+        span = self._tracer.start_span("checkpoint", checkpoint.kind,
+                                       checkpoint_id=checkpoint.checkpoint_id,
+                                       payload=checkpoint.payload)
+        resolution = self._hitl.raise_checkpoint(checkpoint)
+        self._tracer.end_span(span, action=resolution.action, comment=resolution.comment)
         if resolution.action == "reject":
             outcome.content = f"[人工驳回] {resolution.comment or '法务人员驳回了该结论，请调整后重新执行。'}"
             outcome.is_error = True
@@ -187,12 +256,17 @@ class CognitiveEngine:
 
     def _handle_ask_user(self, block: Any) -> dict[str, Any]:
         question = block.input.get("question", "")
-        resolution = self._hitl.raise_checkpoint(Checkpoint(
+        checkpoint = Checkpoint(
             checkpoint_id=f"ask-{uuid.uuid4().hex[:8]}",
             kind="ask_user",
             payload=dict(block.input),
             question=question,
-        ))
+        )
+        span = self._tracer.start_span("checkpoint", "ask_user",
+                                       checkpoint_id=checkpoint.checkpoint_id,
+                                       question=question)
+        resolution = self._hitl.raise_checkpoint(checkpoint)
+        self._tracer.end_span(span, action=resolution.action, payload=resolution.payload)
         answer = (resolution.payload or {}).get("answer", "用户未提供补充信息")
         # 追问得到的关键参数沉淀到会话记忆，避免后续轮次"失忆式反复"
         field = block.input.get("missing_field") or question[:40]
