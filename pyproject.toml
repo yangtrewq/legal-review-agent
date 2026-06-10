@@ -1,0 +1,22 @@
+[project]
+name = "legal-review-agent"
+version = "0.1.0"
+description = "法律评审 Agent — Plan-and-Execute 混合架构，控制面/数据面解耦"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.50.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["legal_review_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
