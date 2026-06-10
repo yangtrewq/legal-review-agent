@@ -15,6 +15,7 @@ import concurrent.futures
 import inspect
 import logging
 import random
+import threading
 import time
 from typing import Any, Callable
 
@@ -53,7 +54,10 @@ class ActionGateway:
         self._sandbox = sandbox or SandboxRunner()
         self._rate_limiter = RateLimiter(config.rate_limit_per_minute)
         self._breakers: dict[str, CircuitBreaker] = {}
-        self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+        self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=config.tool_max_workers)
+        # 真实占用的 worker 数（含超时后仍挂死的 handler）：
+        # future.result(timeout) 只放弃等待、线程不终止，靠信号量在池被挂死耗尽前快速失败
+        self._slots = threading.BoundedSemaphore(config.tool_max_workers)
 
     def _breaker(self, tool_name: str) -> CircuitBreaker:
         if tool_name not in self._breakers:
@@ -137,5 +141,12 @@ class ActionGateway:
                 return handler(**arguments, auth_context=auth_context)
             return handler(**arguments)
 
+        if not self._slots.acquire(blocking=False):
+            raise ToolExecutionError(
+                handler.__name__,
+                "工具执行线程池已满（可能存在超时未退出的 handler），已快速失败",
+                retryable=True,
+            )
         future = self._pool.submit(call)
+        future.add_done_callback(lambda _f: self._slots.release())  # handler 真正结束才归还槽位
         return future.result(timeout=self._cfg.tool_timeout_s)

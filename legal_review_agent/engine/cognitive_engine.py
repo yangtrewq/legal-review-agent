@@ -20,7 +20,7 @@ import uuid
 from typing import Any
 
 from ..config import Config
-from ..context.context_assembler import ContextAssembler
+from ..context.context_assembler import ContextAssembler, estimate_tokens
 from ..delivery.hitl import HITLChannel
 from ..llm.backend import ChatBackend
 from ..memory.memory_manager import MemoryManager
@@ -91,7 +91,6 @@ READ_SKILL_RESOURCE_TOOL = {
     },
 }
 
-META_TOOL_NAMES = {"ask_user", "load_skill", "read_skill_resource"}
 
 
 class CognitiveEngine:
@@ -188,23 +187,19 @@ class CognitiveEngine:
                     break
 
                 # Execute：下发标准数字指令到执行网关；元工具由引擎拦截
-                turn_start = len(messages)  # 中断时回滚到回合边界，保证上下文完整性
                 messages.append({"role": "assistant", "content": response.content})
                 tool_results = []
                 try:
                     for block in response.content:
                         if block.type != "tool_use":
                             continue
-                        if block.name == "ask_user":
-                            tool_results.append(self._handle_ask_user(block))
-                        elif block.name == "load_skill":
-                            tool_results.append(self._handle_load_skill(block))
-                        elif block.name == "read_skill_resource":
-                            tool_results.append(self._handle_read_resource(block))
-                        else:
-                            tool_results.append(self._handle_tool_call(block))
+                        handler = self._meta_handlers().get(block.name, self._handle_tool_call)
+                        tool_results.append(handler(block))
                 except RunInterrupted:
-                    del messages[turn_start:]  # 丢弃未完成的半个回合（恢复后模型会重做）
+                    # 中断幂等处理：已执行工具的结果保留（副作用已发生，恢复后不应重做），
+                    # 未执行的补"中断"错误回执，保证 tool_use/tool_result 配对完整
+                    self._fill_interrupted_results(response.content, tool_results)
+                    messages.append({"role": "user", "content": tool_results})
                     raise
                 messages.append({"role": "user", "content": tool_results})
             else:
@@ -215,10 +210,31 @@ class CognitiveEngine:
             return None
 
         state.status = "completed"
+        self._complete_all_tasks(state.tasks)
         if self._state_store is not None:
             self._state_store.delete(state.run_id)
         self._memory.session.record_turn("assistant", final_text[:500])
         return final_text
+
+    def _meta_handlers(self) -> dict[str, Any]:
+        """元工具分发表：新增元工具时只需在此注册一处。"""
+        return {
+            "ask_user": self._handle_ask_user,
+            "load_skill": self._handle_load_skill,
+            "read_skill_resource": self._handle_read_resource,
+        }
+
+    @staticmethod
+    def _fill_interrupted_results(content: list[Any], tool_results: list[dict[str, Any]]) -> None:
+        executed = {r["tool_use_id"] for r in tool_results}
+        for block in content:
+            if getattr(block, "type", None) == "tool_use" and block.id not in executed:
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": "[运行被用户中断] 该工具未执行；恢复运行后如仍需要请重新调用。",
+                    "is_error": True,
+                })
 
     def _suspend(self, state: RunState, messages: list[Any]) -> None:
         """持久化循环现场并挂起。"""
@@ -315,16 +331,26 @@ class CognitiveEngine:
                     self._skill_to_tasks.setdefault(skill, []).append(task.id)
 
     def _update_task_progress(self, skill: str, succeeded: bool) -> None:
+        # running 事件已在工具下发前发出（_handle_tool_call），此处只负责 done 判定
+        if not succeeded:
+            return
         for task_id in self._skill_to_tasks.get(skill, []):
             pending = self._task_pending_skills.get(task_id)
             if pending is None:
                 continue
-            self._emitter.emit("task_status", {"task_id": task_id, "status": "running"})
-            if succeeded:
-                pending.discard(skill)
-                if not pending:
-                    del self._task_pending_skills[task_id]
-                    self._emitter.emit("task_status", {"task_id": task_id, "status": "done"})
+            pending.discard(skill)
+            if not pending:
+                del self._task_pending_skills[task_id]
+                self._emitter.emit("task_status", {"task_id": task_id, "status": "done"})
+
+    def _complete_all_tasks(self, plan_tasks: list[dict[str, Any]]) -> None:
+        """运行成功收敛时兜底：把仍未标记完成的子任务（含无 suggested_skills、
+        启发式无法追踪的任务）统一标记 done，避免前端清单永久卡 pending。"""
+        for task in plan_tasks:
+            task_id = task.get("id")
+            if task_id:
+                self._emitter.emit("task_status", {"task_id": task_id, "status": "done"})
+        self._task_pending_skills.clear()
 
     def _handle_tool_call(self, block: Any) -> dict[str, Any]:
         instruction = ToolInstruction(
@@ -423,7 +449,7 @@ class CognitiveEngine:
 
     def _disclose(self, skill_name: str, level: str, trigger: str,
                   text: str, **extra: Any) -> None:
-        est_tokens = int(len(text) / 2)
+        est_tokens = estimate_tokens(text)
         self._tracer.record("skill_disclosure", skill_name,
                             level=level, trigger=trigger, est_tokens=est_tokens, **extra)
         self._emitter.emit("skill_disclosure", {

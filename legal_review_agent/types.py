@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -109,8 +109,7 @@ class CheckpointOption:
     action: str = "answer"
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "label": self.label, "description": self.description,
-                "recommended": self.recommended, "action": self.action}
+        return asdict(self)
 
 
 @dataclass

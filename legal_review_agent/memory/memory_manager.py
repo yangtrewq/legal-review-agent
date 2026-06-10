@@ -13,10 +13,24 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+# 进程内按文件路径加锁：防止同 session 并发运行时读改写互相覆盖；
+# 跨进程并发需在部署层保证（同一 session 路由到同一实例）
+_FILE_LOCKS: dict[str, threading.Lock] = defaultdict(threading.Lock)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """临时文件 + rename 原子落盘，避免写一半进程退出产生损坏文件。"""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 @dataclass
@@ -35,8 +49,9 @@ class LongTermMemory:
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
     def add(self, entry: MemoryEntry) -> None:
-        with self._path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
+        with _FILE_LOCKS[str(self._path)]:
+            with self._path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
 
     def scan(self, tags: list[str] | None = None) -> list[MemoryEntry]:
         if not self._path.exists():
@@ -59,6 +74,7 @@ class SessionMemory:
         self.session_id = session_id
         self._path = root / "sessions" / f"{session_id}.json"
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = _FILE_LOCKS[str(self._path)]
         self._state: dict[str, Any] = (
             json.loads(self._path.read_text(encoding="utf-8"))
             if self._path.exists()
@@ -66,13 +82,15 @@ class SessionMemory:
         )
 
     def record_turn(self, role: str, summary: str) -> None:
-        self._state["turns"].append({"role": role, "summary": summary, "at": time.time()})
-        self._flush()
+        with self._lock:
+            self._state["turns"].append({"role": role, "summary": summary, "at": time.time()})
+            self._flush()
 
     def set_fact(self, key: str, value: Any) -> None:
         """提取并存储关键状态（如：对方已拒绝的条款、已达成一致的让步）。"""
-        self._state["facts"][key] = value
-        self._flush()
+        with self._lock:
+            self._state["facts"][key] = value
+            self._flush()
 
     def facts(self) -> dict[str, Any]:
         return dict(self._state["facts"])
@@ -81,9 +99,7 @@ class SessionMemory:
         return self._state["turns"][-n:]
 
     def _flush(self) -> None:
-        self._path.write_text(
-            json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        _atomic_write(self._path, json.dumps(self._state, ensure_ascii=False, indent=2))
 
 
 class WorkingMemory:

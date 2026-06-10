@@ -33,6 +33,24 @@ def serialize(obj: Any) -> Any:
     return repr(obj)
 
 
+# 单个字符串字段进入 Trace 的最大长度：防止 base64 文档/超长结果导致内存膨胀，
+# 同时避免完整文档内容经 trace API 外泄。提示词正文一般远低于该阈值，审阅不受影响。
+TRACE_STRING_LIMIT = 8000
+
+
+def compact_for_trace(obj: Any, limit: int = TRACE_STRING_LIMIT) -> Any:
+    """截断 payload 中的超长字符串（仅用于 Trace 存储，不影响发给模型的数据）。"""
+    if isinstance(obj, str):
+        if len(obj) > limit:
+            return obj[:limit] + f"…[已截断，原长 {len(obj)} 字符]"
+        return obj
+    if isinstance(obj, dict):
+        return {k: compact_for_trace(v, limit) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [compact_for_trace(v, limit) for v in obj]
+    return obj
+
+
 @dataclass
 class Span:
     span_id: str
@@ -74,7 +92,7 @@ class Tracer:
             kind=kind,
             name=name,
             started_at=time.time(),
-            payload=serialize(payload),
+            payload=compact_for_trace(serialize(payload)),
         )
         with self._lock:
             self._spans.append(span)
@@ -82,7 +100,7 @@ class Tracer:
 
     def end_span(self, span: Span, **payload: Any) -> None:
         span.ended_at = time.time()
-        span.payload.update(serialize(payload))
+        span.payload.update(compact_for_trace(serialize(payload)))
 
     def record(self, kind: str, name: str, **payload: Any) -> Span:
         """记录瞬时事件（无持续时间）。"""

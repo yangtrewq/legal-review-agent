@@ -84,4 +84,4 @@ class WebHITLChannel(HITLChannel):
             return list(self._pending)
 
     def deliver(self, title: str, content: str) -> None:
-        self._emitter.emit("deliver", {"title": title, "content": content})
+        """Web 场景的交付由编排层的 final 事件承担，此处为空实现避免重复事件。"""

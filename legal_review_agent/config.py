@@ -105,6 +105,7 @@ class ResilienceConfig:
     retry_base_delay_s: float = 1.0
     retry_max_delay_s: float = 30.0
     tool_timeout_s: float = 60.0
+    tool_max_workers: int = 8
     rate_limit_per_minute: int = 120
     circuit_failure_threshold: int = 5
     circuit_recovery_time_s: float = 30.0

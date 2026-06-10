@@ -202,15 +202,38 @@ const $ = (id) => document.getElementById(id);
 let currentRunId = null;
 let suspendedRunId = null;
 let streamingEl = null;
+let streamedThisRun = false;   // 本轮是否已流式输出过正文（final 去重用）
 let currentCkptId = null;
 let isAskUser = false;
+
+// ---------- 鉴权（服务端设置 LRA_SERVER_TOKEN 时启用） ----------
+
+let apiToken = localStorage.getItem('lra_token') || '';
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({}, opts.headers,
+    apiToken ? {'X-API-Token': apiToken} : {});
+  let resp = await fetch(path, opts);
+  if (resp.status === 401) {
+    const entered = prompt('服务端已启用鉴权，请输入 API Token：');
+    if (entered) {
+      apiToken = entered.trim();
+      localStorage.setItem('lra_token', apiToken);
+      opts.headers['X-API-Token'] = apiToken;
+      resp = await fetch(path, opts);
+    }
+  }
+  return resp;
+}
+function sseUrl(path) {
+  return apiToken ? `${path}?token=${encodeURIComponent(apiToken)}` : path;
+}
 
 // ---------- 中断 / 恢复 ----------
 
 async function interruptRun() {
   if (!currentRunId) return;
   $('pause-btn').disabled = true;
-  await fetch(`/api/runs/${currentRunId}/interrupt`, {method: 'POST'});
+  await api(`/api/runs/${currentRunId}/interrupt`, {method: 'POST'});
   // 实际挂起以 interrupted 事件为准（引擎在安全点才停）
 }
 
@@ -219,7 +242,7 @@ async function resumeRun() {
   const supplement = $('input').value.trim() || null;
   $('input').value = '';
   $('resume-bar').classList.remove('show');
-  const resp = await fetch(`/api/runs/${suspendedRunId}/resume`, {
+  const resp = await api(`/api/runs/${suspendedRunId}/resume`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({supplement}),
   });
@@ -246,10 +269,11 @@ function addMsg(role, text) {
   scrollBottom();
   return el;
 }
-function addChip(text, isErr) {
+function addChip(text, isErr, chipId) {
   const el = document.createElement('div');
   el.className = 'tool-chip' + (isErr ? ' err' : '');
   el.textContent = text;
+  if (chipId) el.id = chipId;
   $('messages').appendChild(el);
   scrollBottom();
   return el;
@@ -264,9 +288,10 @@ async function send() {
   suspendedRunId = null;
   $('resume-bar').classList.remove('show');
   addMsg('user', text);
+  streamedThisRun = false;
   resetPlan();
 
-  const resp = await fetch('/api/chat', {
+  const resp = await api('/api/chat', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({text, session_id: 'web'}),
   });
@@ -276,7 +301,7 @@ async function send() {
 }
 
 function listen(runId) {
-  const es = new EventSource(`/api/runs/${runId}/events`);
+  const es = new EventSource(sseUrl(`/api/runs/${runId}/events`));
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     handleEvent(ev, es);
@@ -292,6 +317,7 @@ function handleEvent(ev, es) {
     case 'plan': renderPlan(ev); break;
     case 'task_status': setTaskStatus(ev.task_id, ev.status); break;
     case 'text_delta':
+      streamedThisRun = true;
       if (!streamingEl) {
         streamingEl = addMsg('assistant', '');
         streamingEl.insertAdjacentHTML('beforeend', '<span class="cursor"></span>');
@@ -301,13 +327,12 @@ function handleEvent(ev, es) {
       break;
     case 'tool_start':
       flushStream();
-      addChip(`🔧 ${ev.tool_name} 调用中…`);
+      addChip(`🔧 ${ev.tool_name} 调用中…`, false, `chip-${ev.tool_use_id}`);
       break;
     case 'tool_end': {
-      const chips = document.querySelectorAll('.tool-chip');
-      const last = [...chips].reverse().find(c => c.textContent.includes(ev.tool_name));
+      const chip = document.getElementById(`chip-${ev.tool_use_id}`);
       const label = ev.is_error ? `❌ ${ev.tool_name} 失败` : `✅ ${ev.tool_name} 完成`;
-      if (last) { last.textContent = label; last.classList.toggle('err', ev.is_error); }
+      if (chip) { chip.textContent = label; chip.classList.toggle('err', ev.is_error); }
       else addChip(label, ev.is_error);
       break;
     }
@@ -328,11 +353,8 @@ function handleEvent(ev, es) {
       break;
     case 'final':
       flushStream();
-      // 流式已经展示过正文则不再重复气泡；短路/旁路场景直接展示
-      if (!document.querySelector('#messages .msg.assistant:last-of-type') ||
-          ev.text !== lastAssistantText()) {
-        if (!lastAssistantText()) addMsg('assistant', ev.text);
-      }
+      // 流式已经展示过正文则不再重复气泡；短路/旁路（无流式）场景直接展示
+      if (!streamedThisRun && ev.text) addMsg('assistant', ev.text);
       break;
     case 'error':
       flushStream();
@@ -345,10 +367,6 @@ function handleEvent(ev, es) {
   }
 }
 
-function lastAssistantText() {
-  const list = document.querySelectorAll('#messages .msg.assistant');
-  return list.length ? list[list.length - 1].textContent : '';
-}
 function flushStream() {
   if (streamingEl) {
     const c = streamingEl.querySelector('.cursor');
@@ -426,7 +444,7 @@ function renderOptions(options) {
 async function selectOption(opt) {
   if (!currentCkptId) return;
   const comment = $('ckpt-input').value.trim();
-  await fetch(`/api/checkpoints/${currentCkptId}/resolve`, {
+  await api(`/api/checkpoints/${currentCkptId}/resolve`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       action: opt.action,
@@ -442,7 +460,7 @@ async function resolveCkpt(action) {
   const text = $('ckpt-input').value.trim();
   const body = {action, comment: text};
   if (action === 'answer') body.payload = {answer: text || '（用户未填写）'};
-  await fetch(`/api/checkpoints/${currentCkptId}/resolve`, {
+  await api(`/api/checkpoints/${currentCkptId}/resolve`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
   });
@@ -459,11 +477,11 @@ let lastTraceRunId = null;
 async function loadTrace(runId) {
   if (runId) lastTraceRunId = runId;
   if (!lastTraceRunId) {
-    const runs = await (await fetch('/api/runs')).json();
+    const runs = await (await api('/api/runs')).json();
     if (!runs.length) return;
     lastTraceRunId = runs[0].run_id;
   }
-  const trace = await (await fetch(`/api/runs/${lastTraceRunId}/trace`)).json();
+  const trace = await (await api(`/api/runs/${lastTraceRunId}/trace`)).json();
   renderTrace(trace);
 }
 function renderTrace(trace) {

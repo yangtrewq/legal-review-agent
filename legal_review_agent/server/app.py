@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import secrets
 import threading
+import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from ..app import LegalReviewAgent
@@ -33,6 +36,25 @@ from ..types import UserInput
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="法律评审 Agent")
+
+# 鉴权：设置 LRA_SERVER_TOKEN 后所有 /api/* 需携带凭证
+# （Authorization: Bearer <token> / X-API-Token 头 / ?token= 查询参数，
+#   查询参数用于 EventSource 无法自定义请求头的场景）。未设置则不启用（本地开发）。
+_SERVER_TOKEN = os.environ.get("LRA_SERVER_TOKEN", "")
+
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    if _SERVER_TOKEN and request.url.path.startswith("/api/"):
+        provided = (
+            request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            or request.headers.get("x-api-token", "")
+            or request.query_params.get("token", "")
+        )
+        if not secrets.compare_digest(provided, _SERVER_TOKEN):
+            return JSONResponse({"detail": "未授权：缺少或错误的 API Token"}, status_code=401)
+    return await call_next(request)
+
 
 _agent = LegalReviewAgent()
 _trace_store = TraceStore()
@@ -56,6 +78,8 @@ def _launch(run_id: str, target) -> None:
     """统一的运行线程封装：异常透传前端，结束时关闭事件流。"""
     emitter = _runs[run_id]["emitter"]
 
+    entry = _runs[run_id]
+
     def worker() -> None:
         try:
             target()
@@ -65,13 +89,29 @@ def _launch(run_id: str, target) -> None:
         finally:
             emitter.emit("done")
             emitter.close()
+            # 不立即删除：前端可能尚未订阅 SSE；标记完成时间，由 _sweep_runs 延迟清扫
+            entry["done_at"] = time.time()
 
     thread = threading.Thread(target=worker, name=f"run-{run_id}", daemon=True)
     _runs[run_id]["thread"] = thread
     thread.start()
 
 
+_RUN_RETENTION_S = 600.0
+
+
+def _sweep_runs() -> None:
+    """清扫已完成且超过保留期的运行条目，防止 _runs 无界增长。"""
+    now = time.time()
+    with _runs_lock:
+        stale = [rid for rid, entry in _runs.items()
+                 if entry.get("done_at") and now - entry["done_at"] > _RUN_RETENTION_S]
+        for rid in stale:
+            del _runs[rid]
+
+
 def _register_run(run_id: str) -> dict:
+    _sweep_runs()
     emitter = EventEmitter()
     interrupt_event = threading.Event()
     hitl = WebHITLChannel(emitter, interrupt_event=interrupt_event)
