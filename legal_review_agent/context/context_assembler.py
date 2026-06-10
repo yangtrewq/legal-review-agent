@@ -16,11 +16,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import anthropic
-
 from ..config import Config
+from ..llm.backend import ChatBackend
 from ..observability.tracing import serialize
-from ..sdk_utils import extract_text
+from ..sdk_utils import extract_text, parse_json
 from ..memory.memory_manager import MemoryEntry, MemoryManager
 
 # 静态系统提示词 —— 保持字节级稳定以命中前缀缓存，禁止插入时间戳/会话 ID 等易变内容
@@ -47,8 +46,8 @@ def estimate_tokens(text: str) -> int:
 
 
 class ContextAssembler:
-    def __init__(self, client: anthropic.Anthropic, config: Config, memory: MemoryManager):
-        self._client = client
+    def __init__(self, llm: ChatBackend, config: Config, memory: MemoryManager):
+        self._llm = llm
         self._cfg = config
         self._memory = memory
 
@@ -73,22 +72,22 @@ class ContextAssembler:
 
         listing = "\n".join(f"[{i}] ({','.join(e.tags)}) {e.content[:120]}"
                             for i, e in enumerate(candidates))
-        response = self._client.messages.create(
+        response = self._llm.complete(
             model=self._cfg.models.router_model,
             max_tokens=256,
             system="你是记忆筛选器。从候选记忆中挑出与任务最相关的条目，输出 JSON。",
-            output_config={"format": {"type": "json_schema", "schema": {
+            messages=[{"role": "user", "content": f"任务：{query}\n\n候选记忆：\n{listing}\n\n最多选 {max_items} 条。"}],
+            json_schema={
                 "type": "object",
                 "properties": {"indices": {"type": "array", "items": {"type": "integer"}}},
                 "required": ["indices"],
                 "additionalProperties": False,
-            }}},
-            messages=[{"role": "user", "content": f"任务：{query}\n\n候选记忆：\n{listing}\n\n最多选 {max_items} 条。"}],
+            },
         )
         text = extract_text(response)
         if not text:
             return candidates[:max_items]  # 筛选器异常时退化为取前 N 条，不阻断主链路
-        indices = json.loads(text)["indices"][:max_items]
+        indices = parse_json(text)["indices"][:max_items]
         return [candidates[i] for i in indices if 0 <= i < len(candidates)]
 
     def build_dynamic_context(self, query: str) -> str:
@@ -155,7 +154,7 @@ class ContextAssembler:
 
         head, middle, tail = messages[:1], messages[1:tail_start], messages[tail_start:]
         middle_text = self._dump(middle)[:60_000]
-        response = self._client.messages.create(
+        response = self._llm.complete(
             model=self._cfg.models.router_model,
             max_tokens=2048,
             system="压缩以下 Agent 执行历史，保留：已完成的子任务及其结论、已调用工具与关键返回、待办事项。丢弃：原始长文本、重复内容。",

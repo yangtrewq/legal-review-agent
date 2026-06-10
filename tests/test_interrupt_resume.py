@@ -110,7 +110,7 @@ def _make_engine(tmp_path, interrupt_event=None, state_store=None):
     gateway = ActionGateway(registry, FAST_CFG)
     memory = MemoryManager(str(tmp_path), "t")
     engine = CognitiveEngine(
-        client=None, config=DEFAULT_CONFIG, registry=registry,
+        llm=None, config=DEFAULT_CONFIG, registry=registry,
         gateway=gateway, assembler=None, memory=memory, hitl=None,
         tracer=Tracer("test"), emitter=EventEmitter(),
         state_store=state_store, interrupt_event=interrupt_event,

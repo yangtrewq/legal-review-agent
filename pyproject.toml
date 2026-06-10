@@ -12,6 +12,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# 本地部署模型服务（GLM-V5 等 OpenAI 兼容端点）所需
+openai = ["openai>=1.30"]
 
 [build-system]
 requires = ["setuptools>=68"]

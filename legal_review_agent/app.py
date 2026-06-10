@@ -11,8 +11,6 @@ from __future__ import annotations
 import logging
 import threading
 
-import anthropic
-
 from .config import DEFAULT_CONFIG, Config
 from .context.context_assembler import ContextAssembler
 from .delivery.hitl import ConsoleChannel, HITLChannel
@@ -20,6 +18,7 @@ from .engine.cognitive_engine import CognitiveEngine
 from .engine.run_state import RunStateStore
 from .executor.action_gateway import ActionGateway
 from .gateway.intent_router import IntentRouter
+from .llm.backend import ChatBackend, build_backend
 from .memory.memory_manager import MemoryManager
 from .observability.events import EventEmitter, NoopEmitter
 from .observability.tracing import NoopTracer, Tracer
@@ -36,14 +35,14 @@ class LegalReviewAgent:
         self,
         config: Config = DEFAULT_CONFIG,
         hitl: HITLChannel | None = None,
-        client: anthropic.Anthropic | None = None,
+        llm: ChatBackend | None = None,
     ):
         self._cfg = config
-        self._client = client or anthropic.Anthropic()
+        self._llm = llm or build_backend(config.models)
         self._hitl = hitl or ConsoleChannel()
         self._registry = register_builtin_skills(ToolRegistry())
-        self._router = IntentRouter(self._client, config)
-        self._planner = TaskPlanner(self._client, config, self._registry)
+        self._router = IntentRouter(self._llm, config)
+        self._planner = TaskPlanner(self._llm, config, self._registry)
         self._gateway = ActionGateway(self._registry, config.resilience)
         self.state_store = RunStateStore(config.memory_root)
 
@@ -150,9 +149,9 @@ class LegalReviewAgent:
         interrupt_event: "threading.Event | None",
     ) -> CognitiveEngine:
         memory = MemoryManager(self._cfg.memory_root, session_id)
-        assembler = ContextAssembler(self._client, self._cfg, memory)
+        assembler = ContextAssembler(self._llm, self._cfg, memory)
         return CognitiveEngine(
-            self._client, self._cfg, self._registry,
+            self._llm, self._cfg, self._registry,
             self._gateway, assembler, memory, hitl,
             emitter=emitter, tracer=tracer,
             state_store=self.state_store, interrupt_event=interrupt_event,

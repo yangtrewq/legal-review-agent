@@ -27,14 +27,14 @@ class FakeToolUseBlock(BaseModel):
     input: dict = {}
 
 
-def fake_client(summary_text="压缩摘要"):
+def fake_llm(summary_text="压缩摘要"):
     response = SimpleNamespace(content=[SimpleNamespace(type="text", text=summary_text)])
-    return SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: response))
+    return SimpleNamespace(complete=lambda **kw: response)
 
 
 def make_assembler(threshold):
     cfg = Config(context_compaction_threshold_tokens=threshold)
-    return ContextAssembler(fake_client(), cfg, memory=None)
+    return ContextAssembler(fake_llm(), cfg, memory=None)
 
 
 def tool_result_msg(tool_use_id):
@@ -88,8 +88,8 @@ def test_compress_gives_up_when_no_safe_boundary():
 
 def test_compress_keeps_original_when_summarizer_returns_empty():
     cfg = Config(context_compaction_threshold_tokens=1)
-    assembler = ContextAssembler(fake_client(summary_text=""), cfg, memory=None)
-    assembler._client.messages.create = lambda **kw: SimpleNamespace(content=[])
+    assembler = ContextAssembler(fake_llm(), cfg, memory=None)
+    assembler._llm = SimpleNamespace(complete=lambda **kw: SimpleNamespace(content=[]))
     messages = [{"role": "user", "content": f"消息{i}" * 50} for i in range(10)]
     assert assembler.maybe_compress(messages) is messages
 

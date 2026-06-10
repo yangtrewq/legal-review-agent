@@ -67,7 +67,7 @@ def make_engine(tmp_path, plan_skills=("fetch_baseline",)):
     gateway = ActionGateway(registry, FAST_CFG)
     memory = MemoryManager(str(tmp_path), "t")
     engine = CognitiveEngine(
-        client=None, config=DEFAULT_CONFIG, registry=registry,
+        llm=None, config=DEFAULT_CONFIG, registry=registry,
         gateway=gateway, assembler=None, memory=memory, hitl=AutoApprove(),
         tracer=Tracer("test"),
     )

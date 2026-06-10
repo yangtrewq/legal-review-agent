@@ -19,11 +19,10 @@ import threading
 import uuid
 from typing import Any
 
-import anthropic
-
 from ..config import Config
 from ..context.context_assembler import ContextAssembler
 from ..delivery.hitl import HITLChannel
+from ..llm.backend import ChatBackend
 from ..memory.memory_manager import MemoryManager
 from ..observability.events import EventEmitter, NoopEmitter
 from ..observability.tracing import NoopTracer, Tracer, serialize
@@ -98,7 +97,7 @@ META_TOOL_NAMES = {"ask_user", "load_skill", "read_skill_resource"}
 class CognitiveEngine:
     def __init__(
         self,
-        client: anthropic.Anthropic,
+        llm: ChatBackend,
         config: Config,
         registry: ToolRegistry,
         gateway: ActionGateway,
@@ -110,7 +109,7 @@ class CognitiveEngine:
         state_store: RunStateStore | None = None,
         interrupt_event: threading.Event | None = None,
     ):
-        self._client = client
+        self._llm = llm
         self._cfg = config
         self._registry = registry
         self._gateway = gateway
@@ -288,19 +287,14 @@ class CognitiveEngine:
             system=system, messages=messages, tools=[t["name"] for t in tools],
             tool_schemas=tools,
         )
-        with self._client.messages.stream(
+        response = self._llm.engine_turn(
             model=self._cfg.models.engine_model,
             max_tokens=self._cfg.models.engine_max_tokens,
-            thinking={"type": "adaptive"},
-            output_config={"effort": self._cfg.models.effort},
             system=system,
             tools=tools,
             messages=messages,
-        ) as stream:
-            for event in stream:
-                if event.type == "content_block_delta" and event.delta.type == "text_delta":
-                    self._emitter.emit("text_delta", {"text": event.delta.text})
-            response = stream.get_final_message()
+            on_text=lambda text: self._emitter.emit("text_delta", {"text": text}),
+        )
         self._tracer.end_span(
             span,
             stop_reason=response.stop_reason,

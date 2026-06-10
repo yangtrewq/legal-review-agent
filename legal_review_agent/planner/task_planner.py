@@ -6,12 +6,9 @@
 
 from __future__ import annotations
 
-import json
-
-import anthropic
-
 from ..config import Config
-from ..sdk_utils import require_text
+from ..llm.backend import ChatBackend
+from ..sdk_utils import parse_json, require_text
 from ..registry.tool_registry import ToolRegistry
 from ..types import ExecutionPlan, SubTask, UserInput
 
@@ -60,8 +57,8 @@ _SYSTEM_TEMPLATE = """你是法律评审系统的任务规划器。把审查目�
 
 
 class TaskPlanner:
-    def __init__(self, client: anthropic.Anthropic, config: Config, registry: ToolRegistry):
-        self._client = client
+    def __init__(self, llm: ChatBackend, config: Config, registry: ToolRegistry):
+        self._llm = llm
         self._cfg = config
         self._registry = registry
 
@@ -72,16 +69,16 @@ class TaskPlanner:
             "model_request", self._cfg.models.engine_model,
             stage="planning", system=system, messages=messages,
         ) if tracer else None
-        response = self._client.messages.create(
+        response = self._llm.complete(
             model=self._cfg.models.engine_model,
             max_tokens=self._cfg.models.engine_max_tokens,
-            thinking={"type": "adaptive"},
             system=system,
-            output_config={"format": {"type": "json_schema", "schema": _PLAN_SCHEMA}},
             messages=messages,
+            json_schema=_PLAN_SCHEMA,
+            thinking=True,
         )
         text = require_text(response, stage="planning")
-        data = json.loads(text)
+        data = parse_json(text)
         if tracer:
             tracer.end_span(span, plan=data, usage=response.usage)
         plan = ExecutionPlan(

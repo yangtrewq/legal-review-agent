@@ -10,12 +10,9 @@
 
 from __future__ import annotations
 
-import json
-
-import anthropic
-
 from ..config import Config
-from ..sdk_utils import require_text
+from ..llm.backend import ChatBackend
+from ..sdk_utils import parse_json, require_text
 from ..types import MacroIntent, RoutingDecision, UserInput
 
 _ROUTING_SCHEMA = {
@@ -43,8 +40,8 @@ _SYSTEM = """你是法律评审系统的意图路由网关。只做粗粒度宏�
 
 
 class IntentRouter:
-    def __init__(self, client: anthropic.Anthropic, config: Config):
-        self._client = client
+    def __init__(self, llm: ChatBackend, config: Config):
+        self._llm = llm
         self._cfg = config
 
     def route(self, user_input: UserInput, tracer=None) -> RoutingDecision:
@@ -54,15 +51,15 @@ class IntentRouter:
             "model_request", self._cfg.models.router_model,
             stage="routing", system=_SYSTEM, messages=messages,
         ) if tracer else None
-        response = self._client.messages.create(
+        response = self._llm.complete(
             model=self._cfg.models.router_model,
             max_tokens=self._cfg.models.router_max_tokens,
             system=_SYSTEM,
-            output_config={"format": {"type": "json_schema", "schema": _ROUTING_SCHEMA}},
             messages=messages,
+            json_schema=_ROUTING_SCHEMA,
         )
         text = require_text(response, stage="routing")
-        data = json.loads(text)
+        data = parse_json(text)
         if tracer:
             tracer.end_span(span, decision=data, usage=response.usage)
         return RoutingDecision(

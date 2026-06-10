@@ -40,6 +40,46 @@
   追问获得的参数沉淀到会话记忆，后续轮次不再重复询问。
 - **前缀缓存友好**：静态系统提示词禁止插入时间戳/会话 ID 等易变内容；动态上下文统一放在 messages 内。
 
+## 模型后端配置（支持本地部署 GLM-V5）
+
+模型 Provider 通过环境变量切换，调用方代码零改动（`llm/backend.py` 统一抽象）：
+
+| 环境变量 | 说明 | 示例 |
+|---|---|---|
+| `LRA_PROVIDER` | `anthropic`（默认）/ `openai_compatible` | `openai_compatible` |
+| `LRA_BASE_URL` | 服务地址 | `http://localhost:8000/v1` |
+| `LRA_API_KEY` | 鉴权 key（本地服务通常任意值） | `EMPTY` |
+| `LRA_ENGINE_MODEL` | 认知引擎/规划模型 | `glm-v5` |
+| `LRA_ROUTER_MODEL` | 路由/记忆筛选/压缩模型 | `glm-v5` |
+| `LRA_JSON_MODE` | `=1` 时启用 `response_format=json_object`（vLLM 支持时建议开启） | `1` |
+
+**对接本地 GLM-V5（vLLM / sglang 等 OpenAI 兼容端点）：**
+
+```bash
+pip install -e ".[dev,openai]"
+export LRA_PROVIDER=openai_compatible
+export LRA_BASE_URL=http://localhost:8000/v1
+export LRA_API_KEY=EMPTY
+export LRA_ENGINE_MODEL=glm-v5
+export LRA_ROUTER_MODEL=glm-v5
+export LRA_JSON_MODE=1
+uvicorn legal_review_agent.server.app:app --port 8080
+```
+
+能力差异由 `ModelCapabilities` 自动门控，调用方不感知：
+
+| 能力 | anthropic | openai_compatible (GLM-V5) |
+|---|---|---|
+| adaptive thinking / effort | ✅ | ❌ 不发送该参数 |
+| 结构化输出 | `output_config.format=json_schema` | Schema 注入系统提示词 + 宽松 JSON 解析（`parse_json` 容忍围栏/前后缀）；可选 json_object 模式 |
+| 前缀缓存 `cache_control` | ✅ | ❌ 自动剥离 |
+| 工具调用 | 原生 tool_use/tool_result | 双向翻译为 OpenAI tool_calls / role=tool |
+| 流式输出 | SDK stream | chat.completions stream（含 tool_calls 增量聚合） |
+| 多模态文档块 | ✅ | ⚠️ 替换为占位文本（建议改为前置抽取文本后传入） |
+
+注意：`anthropic` Provider 也支持 `LRA_BASE_URL` 指向 Anthropic 协议兼容网关（如 LiteLLM proxy），
+若你的 GLM 服务挂在这类网关后面，无需启用 openai_compatible。
+
 ## 技能渐进披露 (Progressive Disclosure)
 
 四层披露资产，按需进入上下文以控制 token 成本：
