@@ -137,3 +137,38 @@ def test_normalized_blocks_serializable():
     assert dumped[0] == {"type": "text", "text": "t"}
     assert dumped[1] == {"type": "tool_use", "id": "i", "name": "n", "input": {"a": 1}}
     assert dumped[2]["signature"] == "sig"
+
+
+# ---- .env 配置文件加载 ----
+
+def test_load_env_file(tmp_path, monkeypatch):
+    from legal_review_agent.config import load_env_file
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# 注释行\n"
+        "LRA_PROVIDER=openai_compatible\n"
+        'LRA_BASE_URL="http://localhost:8000/v1"\n'
+        "LRA_ENGINE_MODEL = glm-v5\n"
+        "\n"
+        "无等号的坏行\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("LRA_PROVIDER", raising=False)
+    monkeypatch.delenv("LRA_BASE_URL", raising=False)
+    monkeypatch.setenv("LRA_ENGINE_MODEL", "shell优先")  # shell 显式值不被 .env 覆盖
+
+    loaded = load_env_file(env_file)
+    assert loaded["LRA_PROVIDER"] == "openai_compatible"
+    assert loaded["LRA_BASE_URL"] == "http://localhost:8000/v1"  # 引号被剥离
+
+    import os
+    assert os.environ["LRA_PROVIDER"] == "openai_compatible"
+    assert os.environ["LRA_ENGINE_MODEL"] == "shell优先"
+
+    monkeypatch.delenv("LRA_PROVIDER", raising=False)
+    monkeypatch.delenv("LRA_BASE_URL", raising=False)
+
+
+def test_load_env_file_missing_returns_empty(tmp_path):
+    from legal_review_agent.config import load_env_file
+    assert load_env_file(tmp_path / "nonexistent.env") == {}

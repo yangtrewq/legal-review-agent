@@ -42,7 +42,15 @@
 
 ## 模型后端配置（支持本地部署 GLM-V5）
 
-模型 Provider 通过环境变量切换，调用方代码零改动（`llm/backend.py` 统一抽象）：
+**推荐方式：`.env` 配置文件**（启动时自动加载，shell 显式 export 的值优先）：
+
+```bash
+cp .env.example .env      # 模板已含 GLM-V5 本地部署示例，按需修改
+```
+
+也可用 `LRA_ENV_FILE=/path/to/custom.env` 指定其他路径，或直接 export 环境变量。
+
+模型 Provider 通过以下变量切换，调用方代码零改动（`llm/backend.py` 统一抽象）：
 
 | 环境变量 | 说明 | 示例 |
 |---|---|---|

@@ -18,8 +18,41 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def load_env_file(path: str | os.PathLike | None = None) -> dict[str, str]:
+    """加载 .env 配置文件（KEY=VALUE 格式，# 开头为注释）。
+
+    查找顺序：显式传入 path → 环境变量 LRA_ENV_FILE → 当前工作目录 ./.env。
+    已存在的环境变量优先，不会被 .env 覆盖（shell 显式 export 的值最大）。
+    在 config 模块导入时自动执行一次。
+    """
+    candidate = Path(path) if path else Path(os.environ.get("LRA_ENV_FILE", ".env"))
+    if not candidate.is_file():
+        return {}
+    loaded: dict[str, str] = {}
+    for lineno, raw in enumerate(candidate.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip("'\"")
+        if not key:
+            logger.warning("%s 第 %d 行格式无效，已忽略", candidate, lineno)
+            continue
+        loaded[key] = value
+        if key not in os.environ:
+            os.environ[key] = value
+    return loaded
+
+
+load_env_file()
 
 
 def _env(name: str, default: str) -> str:
