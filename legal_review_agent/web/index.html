@@ -294,67 +294,85 @@
     overflow: auto; white-space: pre-wrap; word-break: break-word; max-height: 400px;
   }
 
-  /* ===== 卡点弹窗 ===== */
-  #ckpt-mask {
-    position: fixed; inset: 0; z-index: 100; display: none;
-    background: rgba(28, 35, 50, 0.4); backdrop-filter: blur(3px);
-    align-items: center; justify-content: center; padding: 20px;
+  /* ===== 内联卡点卡片（对话流的一部分） ===== */
+  .ckpt-card {
+    align-self: flex-start; width: min(560px, 88%);
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 3px solid var(--gold); border-radius: var(--radius);
+    padding: 14px 17px 13px; animation: rise .3s ease; box-shadow: var(--shadow-md);
   }
-  #ckpt-mask.show { display: flex; }
-  @keyframes pop { from { opacity: 0; transform: scale(.96) translateY(8px); } to { opacity: 1; transform: none; } }
-  #ckpt-modal {
-    background: var(--surface); border-radius: 18px; width: min(620px, 100%);
-    max-height: 84vh; display: flex; flex-direction: column;
-    box-shadow: var(--shadow-lg); animation: pop .22s ease;
+  .ckpt-card .ck-head {
+    display: flex; align-items: center; gap: 9px; margin-bottom: 8px;
   }
-  #ckpt-modal .head {
-    padding: 18px 22px 14px; border-bottom: 1px solid var(--border);
-    font-family: var(--serif); font-weight: 700; font-size: 16px;
-    display: flex; align-items: center; gap: 9px;
+  .ckpt-card .ck-badge {
+    font-family: var(--serif); font-weight: 700; font-size: 14px;
   }
-  #ckpt-modal .body { padding: 16px 22px; overflow-y: auto; }
-  #ckpt-question { font-size: 14.5px; line-height: 1.65; }
-  #ckpt-payload {
+  .ckpt-card .ck-kind {
+    font-size: 11px; color: var(--muted); font-family: var(--mono);
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 999px; padding: 1px 9px;
+  }
+  .ckpt-card .ck-q { font-size: 14px; line-height: 1.65; }
+  .ckpt-card details { margin-top: 10px; }
+  .ckpt-card summary {
+    cursor: pointer; font-size: 12px; color: var(--text-2); user-select: none;
+  }
+  .ckpt-card summary:hover { color: var(--ink); }
+  .ckpt-card details pre {
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
     padding: 11px 13px; font-size: 12px; font-family: var(--mono); line-height: 1.6;
-    white-space: pre-wrap; word-break: break-word; margin-top: 12px; max-height: 220px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-word; margin-top: 8px;
+    max-height: 220px; overflow-y: auto;
   }
-  #ckpt-options { display: flex; flex-direction: column; gap: 9px; margin-top: 14px; }
+  .ck-options { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
   .opt-card {
-    border: 1px solid var(--border); border-radius: 12px; padding: 12px 15px;
+    border: 1px solid var(--border); border-radius: 12px; padding: 11px 14px;
     cursor: pointer; transition: all .15s ease; background: var(--surface);
   }
   .opt-card:hover {
     border-color: var(--ink); background: var(--ink-soft);
     transform: translateY(-1px); box-shadow: var(--shadow-md);
   }
-  .opt-card .opt-label { font-weight: 600; font-size: 14px; display: flex; gap: 8px; align-items: center; }
+  .opt-card .opt-label { font-weight: 600; font-size: 13.5px; display: flex; gap: 8px; align-items: center; }
   .opt-card .opt-label .rec {
     font-size: 10.5px; color: var(--gold); border: 1px solid var(--gold);
     background: var(--gold-soft); border-radius: 999px; padding: 1px 9px; font-weight: 500;
   }
   .opt-card .opt-desc { color: var(--text-2); font-size: 12.5px; margin-top: 3px; line-height: 1.5; }
-  #ckpt-input {
-    width: 100%; margin-top: 13px; border: 1px solid var(--border); border-radius: 10px;
-    padding: 10px 13px; font-family: inherit; font-size: 13px; min-height: 64px;
+  .ck-input {
+    width: 100%; margin-top: 11px; border: 1px solid var(--border); border-radius: 10px;
+    padding: 9px 12px; font-family: inherit; font-size: 13px; min-height: 54px;
     resize: vertical; outline: none; transition: border-color .15s; background: var(--surface);
   }
-  #ckpt-input:focus { border-color: var(--ink); }
-  #ckpt-modal .foot {
-    padding: 14px 22px 18px; border-top: 1px solid var(--border);
-    display: flex; gap: 10px; justify-content: flex-end;
-  }
-  #ckpt-modal .foot button {
-    border-radius: 10px; padding: 9px 20px; font-size: 13.5px; cursor: pointer;
+  .ck-input:focus { border-color: var(--ink); }
+  .ck-actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 11px; }
+  .ck-actions button {
+    border-radius: 9px; padding: 7px 17px; font-size: 13px; cursor: pointer;
     border: 1px solid var(--border); background: var(--surface);
     color: var(--text-2); transition: all .15s;
   }
-  #ckpt-modal .foot button:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
-  #ckpt-modal .foot .reject { color: var(--err); border-color: #e3bfb9; }
-  #ckpt-modal .foot .reject:hover { background: var(--err-soft); }
-  #ckpt-modal .foot .approve {
+  .ck-actions button:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+  .ck-actions .reject { color: var(--err); border-color: #e3bfb9; }
+  .ck-actions .reject:hover { background: var(--err-soft); }
+  .ck-actions .approve {
     background: linear-gradient(135deg, var(--ok), #2e6344); border: none; color: #fff;
   }
+  /* 已处理态：选项冻结、操作区收起、状态行展示结论 */
+  .ckpt-card.resolved { border-left-color: var(--border-strong); opacity: 0.92; }
+  .ckpt-card.resolved .ck-options { pointer-events: none; }
+  .ckpt-card.resolved .opt-card { opacity: 0.55; }
+  .ckpt-card.resolved .opt-card.chosen {
+    opacity: 1; border-color: var(--ink); background: var(--ink-soft);
+  }
+  .ckpt-card.resolved .ck-input, .ckpt-card.resolved .ck-actions { display: none; }
+  .ck-status {
+    display: none; margin-top: 11px; padding-top: 10px;
+    border-top: 1px dashed var(--border); font-size: 13px; font-weight: 600;
+  }
+  .ckpt-card.resolved .ck-status { display: block; }
+  .ck-status.ok { color: var(--ok); }
+  .ck-status.err { color: var(--err); }
+  .ck-status.neutral { color: var(--text-2); }
 
   @media (max-width: 860px) { #side-col { display: none; } }
 </style>
@@ -424,31 +442,12 @@
   <div id="debug-body"><p style="color:var(--muted);font-size:13px;">运行一次任务后查看链路。</p></div>
 </div>
 
-<div id="ckpt-mask">
-  <div id="ckpt-modal">
-    <div class="head" id="ckpt-title">人工卡点</div>
-    <div class="body">
-      <div id="ckpt-question"></div>
-      <pre id="ckpt-payload"></pre>
-      <div id="ckpt-options"></div>
-      <textarea id="ckpt-input" placeholder="补充回答 / 修改意见 / 驳回原因（可选）"></textarea>
-    </div>
-    <div class="foot">
-      <button class="reject" onclick="resolveCkpt('reject')">驳回</button>
-      <button onclick="resolveCkpt('answer')">提交回答</button>
-      <button class="approve" onclick="resolveCkpt('approve')">批准</button>
-    </div>
-  </div>
-</div>
-
 <script>
 const $ = (id) => document.getElementById(id);
 let currentRunId = null;
 let suspendedRunId = null;
 let streamingEl = null;
 let streamedThisRun = false;   // 本轮是否已流式输出过正文（final 去重用）
-let currentCkptId = null;
-let isAskUser = false;
 let planTotal = 0, planDone = 0;
 let thinkingChip = null, thinkingChars = 0;
 
@@ -612,11 +611,15 @@ function handleEvent(ev, es) {
     case 'skill_disclosure':
       addChip(`📚 ${ev.skill_name} 指南已披露（${ev.level} · ${ev.trigger} · ~${ev.est_tokens} tok）`);
       break;
-    case 'checkpoint': showCkpt(ev); break;
-    case 'checkpoint_resolved': hideCkpt(); break;
+    case 'checkpoint': renderCheckpointCard(ev); break;
+    case 'checkpoint_resolved':
+      // 兜底：本端未处理而后端已决议（超时自动驳回/其他端处理）时同步卡片状态
+      markCkptResolved(ev.checkpoint_id,
+                       ev.action === 'reject' ? 'timeout' : ev.action);
+      break;
     case 'interrupted':
       flushStream();
-      hideCkpt();
+      markAllCkptsInterrupted();
       suspendedRunId = ev.run_id;
       addChip(`⏸ 已在第 ${ev.iteration + 1} 轮暂停，现场已保存`);
       $('resume-bar').classList.add('show');
@@ -710,59 +713,121 @@ function updateProgress() {
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
 
-// ---------- HITL 卡点 ----------
+// ---------- HITL 卡点（对话流内联卡片） ----------
 
-function showCkpt(ev) {
-  currentCkptId = ev.checkpoint_id;
-  isAskUser = ev.kind === 'ask_user';
-  $('ckpt-title').textContent = isAskUser ? '🙋 Agent 追问' : `🛑 人工卡点 · ${ev.kind}`;
-  $('ckpt-question').textContent = ev.question || (isAskUser ? '' : '请审阅以下中间结论：');
-  $('ckpt-payload').textContent = JSON.stringify(ev.payload, null, 2);
-  $('ckpt-payload').style.display = isAskUser ? 'none' : 'block';
-  renderOptions(ev.options || []);
-  $('ckpt-input').value = '';
-  $('ckpt-mask').classList.add('show');
-  $('ckpt-input').focus();
-}
+const pendingCkpts = {};   // checkpoint_id → 卡片元素
 
-function renderOptions(options) {
-  const box = $('ckpt-options');
-  box.innerHTML = '';
-  for (const opt of options) {
-    const card = document.createElement('div');
-    card.className = 'opt-card';
-    card.innerHTML = `
+function renderCheckpointCard(ev) {
+  finishThinking();
+  flushStream();
+  const isAsk = ev.kind === 'ask_user';
+  const card = document.createElement('div');
+  card.className = 'ckpt-card';
+  card.dataset.ckptId = ev.checkpoint_id;
+
+  const badge = isAsk ? '🙋 Agent 追问' : '🛑 待人工确认';
+  const question = ev.question || (isAsk ? '' : '请审阅以下中间结论，确认后继续执行：');
+  card.innerHTML = `
+    <div class="ck-head">
+      <span class="ck-badge">${badge}</span>
+      ${isAsk ? '' : `<span class="ck-kind">${esc(ev.kind)}</span>`}
+    </div>
+    <div class="ck-q">${esc(question)}</div>
+    ${isAsk ? '' : `<details open><summary>查看中间结论</summary><pre>${esc(JSON.stringify(ev.payload, null, 2))}</pre></details>`}
+    <div class="ck-options"></div>
+    <textarea class="ck-input" placeholder="${isAsk ? '或直接输入回答…' : '修改意见 / 驳回原因（可选）…'}"></textarea>
+    <div class="ck-actions"></div>
+    <div class="ck-status"></div>`;
+
+  // 备选项卡片
+  const optBox = card.querySelector('.ck-options');
+  for (const opt of (ev.options || [])) {
+    const el = document.createElement('div');
+    el.className = 'opt-card';
+    el.innerHTML = `
       <div class="opt-label">${esc(opt.label)}${opt.recommended ? '<span class="rec">推荐</span>' : ''}</div>
       ${opt.description ? `<div class="opt-desc">${esc(opt.description)}</div>` : ''}`;
-    card.onclick = () => selectOption(opt);
-    box.appendChild(card);
+    el.onclick = () => {
+      el.classList.add('chosen');
+      submitCkpt(card, opt.action,
+                 {answer: opt.label, option_id: opt.id},
+                 card.querySelector('.ck-input').value.trim(), opt.label);
+    };
+    optBox.appendChild(el);
   }
+
+  // 操作按钮：追问 → 提交回答；审查卡点 → 驳回 / 提交意见
+  const actions = card.querySelector('.ck-actions');
+  const mkBtn = (label, cls, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.onclick = fn;
+    actions.appendChild(b);
+  };
+  const inputOf = () => card.querySelector('.ck-input').value.trim();
+  if (isAsk) {
+    mkBtn('提交回答', 'approve', () => {
+      const text = inputOf() || '（用户未填写）';
+      submitCkpt(card, 'answer', {answer: text}, '', text);
+    });
+  } else {
+    mkBtn('驳回', 'reject', () =>
+      submitCkpt(card, 'reject', null, inputOf(), '驳回' + (inputOf() ? '：' + inputOf() : '')));
+    mkBtn('提交意见', '', () => {
+      const text = inputOf() || '（用户未填写）';
+      submitCkpt(card, 'answer', {answer: text}, '', text);
+    });
+  }
+
+  // 回车提交（Shift+Enter 换行）
+  card.querySelector('.ck-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      const text = inputOf();
+      if (text) submitCkpt(card, 'answer', {answer: text}, '', text);
+    }
+  });
+
+  pendingCkpts[ev.checkpoint_id] = card;
+  clearWelcome();
+  $('messages').appendChild(card);
+  scrollBottom();
+  card.querySelector('.ck-input').focus();
 }
 
-async function selectOption(opt) {
-  if (!currentCkptId) return;
-  const comment = $('ckpt-input').value.trim();
-  await api(`/api/checkpoints/${currentCkptId}/resolve`, {
+async function submitCkpt(card, action, payload, comment, echoText) {
+  if (card.classList.contains('resolved')) return;
+  markCkptResolved(card.dataset.ckptId, action, echoText);
+  if (echoText) addMsg('user', echoText);   // 用户的选择回显为对话流中的用户气泡
+  await api(`/api/checkpoints/${card.dataset.ckptId}/resolve`, {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      action: opt.action,
-      payload: {answer: opt.label, option_id: opt.id},
-      comment,
-    }),
+    body: JSON.stringify({action, payload, comment: comment || ''}),
   });
-  hideCkpt();
 }
-function hideCkpt() { $('ckpt-mask').classList.remove('show'); currentCkptId = null; }
-async function resolveCkpt(action) {
-  if (!currentCkptId) return;
-  const text = $('ckpt-input').value.trim();
-  const body = {action, comment: text};
-  if (action === 'answer') body.payload = {answer: text || '（用户未填写）'};
-  await api(`/api/checkpoints/${currentCkptId}/resolve`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
-  });
-  hideCkpt();
+
+function markCkptResolved(ckptId, action, detail) {
+  const card = pendingCkpts[ckptId];
+  if (!card || card.classList.contains('resolved')) return;
+  card.classList.add('resolved');
+  const det = card.querySelector('details');
+  if (det) det.open = false;
+  const status = card.querySelector('.ck-status');
+  const map = {
+    approve:     ['ok', '✓ 已批准'],
+    reject:      ['err', '✗ 已驳回'],
+    answer:      ['ok', '↩ 已回答' + (detail ? '：' + detail : '')],
+    interrupted: ['neutral', '⏸ 运行中断，卡点未处理'],
+    timeout:     ['err', '⏱ 等待超时，自动驳回'],
+  };
+  const [cls, text] = map[action] || ['neutral', '已处理（' + action + '）'];
+  status.classList.add(cls);
+  status.textContent = text;
+  delete pendingCkpts[ckptId];
+}
+
+function markAllCkptsInterrupted() {
+  for (const id of Object.keys(pendingCkpts)) markCkptResolved(id, 'interrupted');
 }
 
 // ---------- 链路调试 ----------
