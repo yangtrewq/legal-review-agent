@@ -73,8 +73,12 @@ class ChatBackend(ABC):
         tools: list[dict[str, Any]],
         max_tokens: int,
         on_text: Callable[[str], None] | None = None,
+        on_thinking: Callable[[str], None] | None = None,
     ) -> LLMResponse:
-        """流式 + 工具调用的一轮引擎请求；文本增量经 on_text 回调。"""
+        """流式 + 工具调用的一轮引擎请求。
+
+        文本增量经 on_text 回调；推理模型的思考增量经 on_thinking 回调
+        （GLM 的 reasoning_content / Claude 的 thinking_delta）。"""
 
 
 def build_backend(config: ModelConfig) -> ChatBackend:

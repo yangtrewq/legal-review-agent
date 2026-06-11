@@ -172,3 +172,48 @@ def test_load_env_file(tmp_path, monkeypatch):
 def test_load_env_file_missing_returns_empty(tmp_path):
     from legal_review_agent.config import load_env_file
     assert load_env_file(tmp_path / "nonexistent.env") == {}
+
+
+# ---- 流式消费：reasoning_content（GLM 等推理模型）与统计 ----
+
+def _chunk(content=None, reasoning=None, finish=None, tool_calls=None):
+    delta = SimpleNamespace(content=content, reasoning_content=reasoning,
+                            tool_calls=tool_calls)
+    return SimpleNamespace(usage=None,
+                           choices=[SimpleNamespace(delta=delta, finish_reason=finish)])
+
+
+def test_consume_openai_stream_reasoning_and_text():
+    from legal_review_agent.llm.openai_backend import consume_openai_stream
+    chunks = [
+        _chunk(reasoning="让我想想"),
+        _chunk(reasoning="，需要先比对基线"),
+        _chunk(content="审查"),
+        _chunk(content="完成"),
+        _chunk(finish="stop"),
+    ]
+    texts, thoughts = [], []
+    resp = consume_openai_stream(iter(chunks),
+                                 on_text=texts.append, on_thinking=thoughts.append)
+    assert "".join(texts) == "审查完成"
+    assert "".join(thoughts) == "让我想想，需要先比对基线"
+    assert resp.content[0].text == "审查完成"
+    assert resp.stop_reason == "end_turn"
+    stats = resp.usage["stream_stats"]
+    assert stats["chunks"] == 5
+    assert stats["text_chars"] == 4
+    assert stats["reasoning_chars"] == 12
+
+
+def test_consume_openai_stream_tool_calls_accumulated():
+    from legal_review_agent.llm.openai_backend import consume_openai_stream
+    tc1 = SimpleNamespace(index=0, id="call_1",
+                          function=SimpleNamespace(name="fetch_", arguments='{"contract'))
+    tc2 = SimpleNamespace(index=0, id=None,
+                          function=SimpleNamespace(name="baseline", arguments='_type": "采购合同"}'))
+    chunks = [_chunk(tool_calls=[tc1]), _chunk(tool_calls=[tc2]), _chunk(finish="tool_calls")]
+    resp = consume_openai_stream(iter(chunks))
+    assert resp.stop_reason == "tool_use"
+    tool = resp.content[0]
+    assert tool.name == "fetch_baseline"
+    assert tool.input == {"contract_type": "采购合同"}

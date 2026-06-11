@@ -62,7 +62,8 @@ class AnthropicBackend(ChatBackend):
         )
 
     def engine_turn(self, *, model, system, messages, tools, max_tokens,
-                    on_text: Callable[[str], None] | None = None) -> LLMResponse:
+                    on_text: Callable[[str], None] | None = None,
+                    on_thinking: Callable[[str], None] | None = None) -> LLMResponse:
         if not self.caps.prompt_caching:
             system = [{k: v for k, v in blk.items() if k != "cache_control"} for blk in system]
         kwargs: dict[str, Any] = {}
@@ -79,9 +80,12 @@ class AnthropicBackend(ChatBackend):
             **kwargs,
         ) as stream:
             for event in stream:
-                if (on_text is not None and event.type == "content_block_delta"
-                        and event.delta.type == "text_delta"):
+                if event.type != "content_block_delta":
+                    continue
+                if on_text is not None and event.delta.type == "text_delta":
                     on_text(event.delta.text)
+                elif on_thinking is not None and event.delta.type == "thinking_delta":
+                    on_thinking(event.delta.thinking)
             response = stream.get_final_message()
         return LLMResponse(
             content=_normalize_content(response.content),

@@ -450,6 +450,7 @@ let streamedThisRun = false;   // 本轮是否已流式输出过正文（final �
 let currentCkptId = null;
 let isAskUser = false;
 let planTotal = 0, planDone = 0;
+let thinkingChip = null, thinkingChars = 0;
 
 // ---------- 鉴权（服务端设置 LRA_SERVER_TOKEN 时启用） ----------
 
@@ -573,7 +574,16 @@ function handleEvent(ev, es) {
       break;
     case 'plan': renderPlan(ev); break;
     case 'task_status': setTaskStatus(ev.task_id, ev.status); break;
+    case 'thinking_delta':
+      thinkingChars += ev.chars;
+      if (!thinkingChip) {
+        thinkingChip = addChip('', false);
+        thinkingChip.classList.add('running');
+      }
+      thinkingChip.textContent = `🧠 模型思考中… ${thinkingChars} 字`;
+      break;
     case 'text_delta':
+      finishThinking();
       streamedThisRun = true;
       if (!streamingEl) {
         streamingEl = addMsg('assistant', '');
@@ -583,6 +593,7 @@ function handleEvent(ev, es) {
       scrollBottom();
       break;
     case 'tool_start':
+      finishThinking();
       flushStream();
       addChip(`${ev.tool_name} 调用中…`, false, `chip-${ev.tool_use_id}`)
         .classList.add('running');
@@ -614,6 +625,7 @@ function handleEvent(ev, es) {
       addChip(`▶ 已从第 ${ev.iteration + 1} 轮恢复运行`);
       break;
     case 'final':
+      finishThinking();
       flushStream();
       // 流式已经展示过正文则不再重复气泡；短路/旁路（无流式）场景直接展示
       if (!streamedThisRun && ev.text) addMsg('assistant', ev.text);
@@ -629,6 +641,15 @@ function handleEvent(ev, es) {
   }
 }
 
+function finishThinking() {
+  if (thinkingChip) {
+    thinkingChip.textContent = `🧠 思考完成（${thinkingChars} 字）`;
+    thinkingChip.classList.remove('running');
+    thinkingChip.classList.add('ok');
+    thinkingChip = null;
+  }
+  thinkingChars = 0;
+}
 function flushStream() {
   if (streamingEl) {
     const c = streamingEl.querySelector('.cursor');

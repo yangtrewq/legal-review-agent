@@ -155,7 +155,8 @@ class OpenAICompatBackend(ChatBackend):
         return result
 
     def engine_turn(self, *, model, system, messages, tools, max_tokens,
-                    on_text: Callable[[str], None] | None = None) -> LLMResponse:
+                    on_text: Callable[[str], None] | None = None,
+                    on_thinking: Callable[[str], None] | None = None) -> LLMResponse:
         system_text = "\n\n".join(b.get("text", "") for b in system)
         stream = self._client.chat.completions.create(
             model=model,
@@ -164,43 +165,74 @@ class OpenAICompatBackend(ChatBackend):
             tools=to_openai_tools(tools),
             stream=True,
         )
-        text_parts: list[str] = []
-        calls: dict[int, dict[str, Any]] = {}
-        finish_reason = None
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            if delta is None:
-                continue
-            if delta.content:
-                text_parts.append(delta.content)
-                if on_text is not None:
-                    on_text(delta.content)
-            for tc in delta.tool_calls or []:
-                slot = calls.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
-                if tc.id:
-                    slot["id"] = tc.id
-                if tc.function and tc.function.name:
-                    slot["name"] += tc.function.name
-                if tc.function and tc.function.arguments:
-                    slot["arguments"] += tc.function.arguments
+        return consume_openai_stream(stream, on_text=on_text, on_thinking=on_thinking)
 
-        content: list[Any] = []
-        if text_parts:
-            content.append(TextBlock(text="".join(text_parts)))
-        for index in sorted(calls):
-            slot = calls[index]
-            try:
-                arguments = json.loads(slot["arguments"] or "{}")
-            except json.JSONDecodeError:
-                arguments = {}
-            content.append(ToolUseBlock(id=slot["id"] or f"call_{index}",
-                                        name=slot["name"], input=arguments))
-        return LLMResponse(
-            content=content,
-            stop_reason=_STOP_REASON_MAP.get(finish_reason or "stop", "end_turn"),
-        )
+
+def consume_openai_stream(
+    stream: Any,
+    on_text: Callable[[str], None] | None = None,
+    on_thinking: Callable[[str], None] | None = None,
+) -> LLMResponse:
+    """消费 OpenAI 兼容流并归一化。
+
+    GLM 等推理模型的思考过程经 delta.reasoning_content 流式输出（思考期间
+    delta.content 为空），经 on_thinking 回调透出，否则前端在长思考期间
+    收不到任何增量，表现为"没有流式效果"。
+
+    返回的 usage 附带 stream_stats（chunk 数 / 文本字符 / 思考字符），
+    记入链路后可直接区分"端点没流式"还是"前端没收到"。
+    """
+    text_parts: list[str] = []
+    calls: dict[int, dict[str, Any]] = {}
+    finish_reason = None
+    usage: dict[str, Any] = {}
+    stats = {"chunks": 0, "text_chars": 0, "reasoning_chars": 0}
+
+    for chunk in stream:
+        stats["chunks"] += 1
+        if getattr(chunk, "usage", None):
+            usage = chunk.usage.model_dump()
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        delta = choice.delta
+        if choice.finish_reason:
+            finish_reason = choice.finish_reason
+        if delta is None:
+            continue
+        reasoning = getattr(delta, "reasoning_content", None)
+        if reasoning:
+            stats["reasoning_chars"] += len(reasoning)
+            if on_thinking is not None:
+                on_thinking(reasoning)
+        if delta.content:
+            stats["text_chars"] += len(delta.content)
+            text_parts.append(delta.content)
+            if on_text is not None:
+                on_text(delta.content)
+        for tc in delta.tool_calls or []:
+            slot = calls.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
+            if tc.id:
+                slot["id"] = tc.id
+            if tc.function and tc.function.name:
+                slot["name"] += tc.function.name
+            if tc.function and tc.function.arguments:
+                slot["arguments"] += tc.function.arguments
+
+    content: list[Any] = []
+    if text_parts:
+        content.append(TextBlock(text="".join(text_parts)))
+    for index in sorted(calls):
+        slot = calls[index]
+        try:
+            arguments = json.loads(slot["arguments"] or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        content.append(ToolUseBlock(id=slot["id"] or f"call_{index}",
+                                    name=slot["name"], input=arguments))
+    usage["stream_stats"] = stats
+    return LLMResponse(
+        content=content,
+        stop_reason=_STOP_REASON_MAP.get(finish_reason or "stop", "end_turn"),
+        usage=usage,
+    )

@@ -310,6 +310,7 @@ class CognitiveEngine:
             tools=tools,
             messages=messages,
             on_text=lambda text: self._emitter.emit("text_delta", {"text": text}),
+            on_thinking=lambda text: self._emitter.emit("thinking_delta", {"chars": len(text)}),
         )
         self._tracer.end_span(
             span,
