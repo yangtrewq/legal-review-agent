@@ -18,7 +18,11 @@ def extract_text(response: Any, default: str = "") -> str:
 
 
 def parse_json(text: str) -> Any:
-    """宽松 JSON 解析：容忍代码围栏与前后缀文字（本地模型常见输出形态）。"""
+    """宽松 JSON 解析：容忍代码围栏、前后缀文字以及坏前缀（本地模型常见输出形态）。
+
+    例：GLM 在 json_object 模式下偶发输出 '{"' 伪起始符 + 真正对象——
+    退化扫描会从每个 '{' 起点依次尝试，取第一个括号配对完整且可解析的对象。
+    """
     stripped = text.strip()
     if stripped.startswith("```"):
         stripped = re.sub(r"^```[a-zA-Z]*\s*", "", stripped)
@@ -27,13 +31,31 @@ def parse_json(text: str) -> Any:
         return json.loads(stripped)
     except json.JSONDecodeError:
         pass
-    # 退化：提取第一个括号配对完整的 JSON 对象
-    start = stripped.find("{")
-    if start == -1:
+    # 退化：从每个 '{' 起点尝试提取可解析的完整 JSON 对象
+    found_balanced = False
+    for start, ch in enumerate(stripped):
+        if ch != "{":
+            continue
+        candidate = _balanced_object(stripped, start)
+        if candidate is None:
+            continue
+        found_balanced = True
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    if "{" not in stripped:
         raise ValueError(f"输出中不含 JSON 对象: {text[:200]!r}")
+    if found_balanced:
+        raise ValueError(f"JSON 对象无法解析: {text[:200]!r}")
+    raise ValueError(f"JSON 对象不完整: {text[:200]!r}")
+
+
+def _balanced_object(text: str, start: int) -> str | None:
+    """从 start（必须是 '{'）提取括号配对完整的子串；未闭合返回 None。"""
     depth, in_string, escaped = 0, False, False
-    for i in range(start, len(stripped)):
-        ch = stripped[i]
+    for i in range(start, len(text)):
+        ch = text[i]
         if in_string:
             if escaped:
                 escaped = False
@@ -48,8 +70,8 @@ def parse_json(text: str) -> Any:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                return json.loads(stripped[start:i + 1])
-    raise ValueError(f"JSON 对象不完整: {text[:200]!r}")
+                return text[start:i + 1]
+    return None
 
 
 def require_text(response: Any, stage: str) -> str:

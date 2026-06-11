@@ -217,3 +217,16 @@ def test_consume_openai_stream_tool_calls_accumulated():
     tool = resp.content[0]
     assert tool.name == "fetch_baseline"
     assert tool.input == {"contract_type": "采购合同"}
+
+
+def test_parse_json_glm_bad_prefix():
+    """GLM json_object 模式偶发坏前缀 '{\"' + 真正对象（用户实测报错场景）。"""
+    text = ('{"{"intent": "legal_review", "confidence": 0.98, '
+            '"reason": "用户请求对技术服务合同中的知识产权归属条款进行风险识别与审查"}')
+    data = parse_json(text)
+    assert data["intent"] == "legal_review"
+    assert data["confidence"] == 0.98
+
+
+def test_parse_json_multiple_invalid_then_valid():
+    assert parse_json('{bad} 说明 {"k": 1}') == {"k": 1}
