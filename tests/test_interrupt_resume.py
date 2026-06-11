@@ -30,10 +30,10 @@ def test_run_state_roundtrip(tmp_path):
     state = RunState(
         run_id="r1", session_id="s1", user_text="审查合同", goal="g",
         tasks=[{"id": "t1", "name": "n", "description": "", "depends_on": [],
-                "suggested_skills": ["fetch_baseline"]}],
+                "suggested_skills": ["QueryRequirement"]}],
         messages=[{"role": "user", "content": "hi"}],
-        active_tools=[{"name": "fetch_baseline"}],
-        injected_skills=["identify_risk_points"],
+        active_tools=[{"name": "QueryRequirement"}],
+        injected_skills=["IdentifyRisk"],
         iteration=3, status="suspended",
     )
     store.save(state)

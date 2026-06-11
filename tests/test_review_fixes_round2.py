@@ -81,10 +81,10 @@ def test_interrupt_mid_turn_preserves_executed_results(tmp_path):
         memory=MemoryManager(str(tmp_path), "t"), hitl=InterruptOnAsk(),
         tracer=Tracer("test"), emitter=EventEmitter(), state_store=store,
     )
-    # 一轮回合：先执行 fetch_baseline（成功），再 ask_user（触发中断）
+    # 一轮回合：先执行 QueryRequirement（成功），再 ask_user（触发中断）
     response = SimpleNamespace(stop_reason="tool_use", content=[
-        SimpleNamespace(type="tool_use", id="t-ok", name="fetch_baseline",
-                        input={"contract_type": "采购合同"}),
+        SimpleNamespace(type="tool_use", id="t-ok", name="QueryRequirement",
+                        input={"user_id": "U1", "requirement_id": "REQ_1"}),
         SimpleNamespace(type="tool_use", id="t-ask", name="ask_user",
                         input={"question": "立场？"}),
     ])
@@ -98,7 +98,7 @@ def test_interrupt_mid_turn_preserves_executed_results(tmp_path):
     last = saved.messages[-1]
     assert last["role"] == "user"
     results = {r["tool_use_id"]: r for r in last["content"]}
-    assert "采购合同" in results["t-ok"]["content"]          # 已执行结果保留
+    assert "CONTRACT_001" in results["t-ok"]["content"]      # 已执行结果保留
     assert results["t-ask"]["is_error"]                      # 未执行的补中断回执
     assert "中断" in results["t-ask"]["content"]
     # tool_use 与 tool_result 配对完整

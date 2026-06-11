@@ -398,12 +398,12 @@
         <h2>开始一次合同审查</h2>
         <p>描述审查需求或选择以下示例，Agent 将自动规划执行图谱并逐步完成审查。</p>
         <div class="suggests">
-          <button class="suggest" onclick="useSuggest(this)">帮我审查一份采购合同的违约责任条款
-            <span class="hint">基线比对 → 条款解析 → 风险识别 → 修改意见</span></button>
+          <button class="suggest" onclick="useSuggest(this)">请评审需求 REQ_001 对应的采购合同（用户 U001）
+            <span class="hint">QueryRequirement → IdentifyRisk → GenerateOpinion → GenerateSummary</span></button>
           <button class="suggest" onclick="useSuggest(this)">审查这份技术服务合同的知识产权归属约定是否存在风险
             <span class="hint">涉及人工卡点确认，可体验卡片点选交互</span></button>
-          <button class="suggest" onclick="useSuggest(this)">检索保密协议中竞业限制期限的法规上限
-            <span class="hint">单一检索请求，走旁路链路</span></button>
+          <button class="suggest" onclick="useSuggest(this)">检索预付款比例过高的相似评审案例
+            <span class="hint">单一检索请求，旁路直调 SearchDocument</span></button>
         </div>
       </div>
     </div>

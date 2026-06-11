@@ -18,31 +18,31 @@ from legal_review_agent.types import ExecutionPlan
 
 def test_docs_attached_to_builtin_skills():
     registry = register_builtin_skills(ToolRegistry())
-    spec = registry.get("identify_risk_points")
+    spec = registry.get("IdentifyRisk")
     assert spec.instructions_path is not None
     assert "风险定级标准" in spec.load_instructions()
     assert "risk_checklist.md" in spec.list_resources()
-    assert "违约责任" in spec.read_resource("risk_checklist.md")
+    assert "违约风险" in spec.read_resource("risk_checklist.md")
 
 
 def test_catalog_contains_l0_metadata():
     registry = register_builtin_skills(ToolRegistry())
     catalog = registry.catalog()
-    assert "适用：审查任务开始时拉取比对基准" in catalog
+    assert "适用：审查开始时按需求ID拉取合同元数据与背景" in catalog
     assert "有详细指南" in catalog
     assert "risk_checklist.md" in catalog
 
 
 def test_read_resource_rejects_path_traversal():
     registry = register_builtin_skills(ToolRegistry())
-    spec = registry.get("identify_risk_points")
+    spec = registry.get("IdentifyRisk")
     with pytest.raises(FileNotFoundError):
         spec.read_resource("../instructions.md")
 
 
 def test_instructions_lazy_cached():
     registry = register_builtin_skills(ToolRegistry())
-    spec = registry.get("generate_risk_point_opinions")
+    spec = registry.get("GenerateOpinion")
     first = spec.load_instructions()
     assert first is spec.load_instructions()  # 第二次命中缓存
 
@@ -62,7 +62,7 @@ FAST_CFG = ResilienceConfig(max_retries=0, retry_base_delay_s=0, tool_timeout_s=
                             circuit_recovery_time_s=1)
 
 
-def make_engine(tmp_path, plan_skills=("fetch_baseline",)):
+def make_engine(tmp_path, plan_skills=("QueryRequirement",)):
     registry = register_builtin_skills(ToolRegistry())
     gateway = ActionGateway(registry, FAST_CFG)
     memory = MemoryManager(str(tmp_path), "t")
@@ -84,32 +84,29 @@ def block(name, **inputs):
 
 def test_l2_injected_on_first_call_only(tmp_path):
     engine, _ = make_engine(tmp_path)
-    r1 = engine._handle_tool_call(block("identify_risk_points",
-                                        clauses_json="{}", baseline_json="{}"))
+    r1 = engine._handle_tool_call(block("IdentifyRisk", contract_document="合同全文"))
     assert "<skill_instructions" in r1["content"]
     assert "风险定级标准" in r1["content"]
-    r2 = engine._handle_tool_call(block("identify_risk_points",
-                                        clauses_json="{}", baseline_json="{}"))
+    r2 = engine._handle_tool_call(block("IdentifyRisk", contract_document="合同全文"))
     assert "<skill_instructions" not in r2["content"]
 
 
 def test_skill_without_docs_injects_nothing(tmp_path):
     engine, _ = make_engine(tmp_path)
-    r = engine._handle_tool_call(block("fetch_baseline", contract_type="采购合同"))
+    r = engine._handle_tool_call(block("QueryRequirement", user_id="U1", requirement_id="REQ_1"))
     assert "<skill_instructions" not in r["content"]
-    assert json.loads(r["content"])["contract_type"] == "采购合同"
+    assert json.loads(r["content"])["contract_metadata"]["contract_id"] == "CONTRACT_001"
 
 
 def test_load_skill_appends_tool_and_returns_instructions(tmp_path):
-    engine, _ = make_engine(tmp_path, plan_skills=("fetch_baseline",))
-    assert all(t["name"] != "identify_risk_points" for t in engine._active_tools)
-    r = engine._handle_load_skill(block("load_skill", skill_name="identify_risk_points"))
+    engine, _ = make_engine(tmp_path, plan_skills=("QueryRequirement",))
+    assert all(t["name"] != "IdentifyRisk" for t in engine._active_tools)
+    r = engine._handle_load_skill(block("load_skill", skill_name="IdentifyRisk"))
     assert not r["is_error"]
     assert "已加载" in r["content"] and "风险定级标准" in r["content"]
-    assert any(t["name"] == "identify_risk_points" for t in engine._active_tools)
+    assert any(t["name"] == "IdentifyRisk" for t in engine._active_tools)
     # 已随加载给过指南，后续首调不再重复注入
-    rc = engine._handle_tool_call(block("identify_risk_points",
-                                        clauses_json="{}", baseline_json="{}"))
+    rc = engine._handle_tool_call(block("IdentifyRisk", contract_document="合同全文"))
     assert "<skill_instructions" not in rc["content"]
 
 
@@ -122,19 +119,18 @@ def test_load_skill_unknown_name(tmp_path):
 def test_read_skill_resource(tmp_path):
     engine, _ = make_engine(tmp_path)
     r = engine._handle_read_resource(block("read_skill_resource",
-                                           skill_name="identify_risk_points",
+                                           skill_name="IdentifyRisk",
                                            resource_name="risk_checklist.md"))
-    assert not r["is_error"] and "违约责任" in r["content"]
+    assert not r["is_error"] and "违约风险" in r["content"]
     bad = engine._handle_read_resource(block("read_skill_resource",
-                                             skill_name="identify_risk_points",
+                                             skill_name="IdentifyRisk",
                                              resource_name="../instructions.md"))
     assert bad["is_error"]
 
 
 def test_disclosure_recorded_in_trace(tmp_path):
     engine, _ = make_engine(tmp_path)
-    engine._handle_tool_call(block("identify_risk_points",
-                                   clauses_json="{}", baseline_json="{}"))
+    engine._handle_tool_call(block("IdentifyRisk", contract_document="合同全文"))
     spans = engine._tracer.to_dict()["spans"]
     disclosures = [s for s in spans if s["kind"] == "skill_disclosure"]
     assert len(disclosures) == 1

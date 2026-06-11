@@ -21,7 +21,7 @@
 |---|---|---|
 | 2.1 意图路由网关 | `gateway/intent_router.py` | haiku 低成本模型 + 结构化输出做四分类；主链路/旁路/短路分发，**不做槽位提取** |
 | 2.2 任务规划 | `planner/task_planner.py` | opus + adaptive thinking 拆解子任务；`ExecutionPlan.topological_batches()` 输出并发/串行批次并校验无环 |
-| 2.3 技能/工具注册表 | `registry/tool_registry.py` + `skills/builtin.py` | 静态 Schema 字典；`load_schemas(names)` 供引擎 JIT 按需加载；`sandboxed` / `requires_checkpoint` 元属性 |
+| 2.3 技能/工具注册表 | `registry/tool_registry.py` + `skills/builtin.py` | 静态 Schema 字典；标准 Skill 体系（F2-5~F2-9）：`QueryRequirement` 需求获取 / `IdentifyRisk` 风险识别（含 Prompt 模板）/ `GenerateOpinion` 意见生成 / `GenerateSummary` 综合结论 / `SearchDocument` 案例检索 —— Mock 实现、接口契约完整；`load_schemas(names)` 供引擎 JIT 按需加载；`sandboxed` / `requires_checkpoint` 元属性 |
 | 2.4 记忆管理 | `memory/memory_manager.py` | 三层：长记忆（JSONL 记忆文件）/ 会话记忆（按 session 持久化关键状态，防失忆式反复）/ 工作区记忆（任务级暂存） |
 | 2.5 上下文组装 | `context/context_assembler.py` | 静态系统提示词字节级冻结 + `cache_control` 前缀缓存；haiku 做记忆相关性筛选注入；超阈值触发有损压缩 |
 | 2.6 认知循环引擎 | `engine/cognitive_engine.py` | Plan→Execute→Evaluate 状态机；JIT 槽位提取（模型生成 tool_use）；`ask_user` 主动追问（Reverse Prompting）；只下发指令不做物理调用 |

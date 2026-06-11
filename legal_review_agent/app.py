@@ -81,7 +81,7 @@ class LegalReviewAgent:
         if decision.intent == MacroIntent.PURE_RETRIEVAL:
             instruction = ToolInstruction(
                 tool_use_id="bypass-retrieval",
-                tool_name="search_legal_knowledge",
+                tool_name="SearchDocument",
                 arguments={"query": user_input.text},
             )
             span = tracer.start_span("tool_call", instruction.tool_name,
